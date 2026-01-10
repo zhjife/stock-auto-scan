@@ -1,66 +1,32 @@
-name: Build and Run (No Python Needed)
-
-on: workflow_dispatch
+name: Run Stock Scan
+on: workflow_dispatch  # 允许手机手动点击运行
 
 jobs:
-  # --- 任务1: 云端打包 (在美国服务器上进行) ---
-  build_exe:
-    runs-on: windows-latest
+  stock_job:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-
-      - name: Set up Python (Cloud)
+      
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          cache: 'pip'
-
-      - name: Install Dependencies
+          
+      - name: Install Libs
         run: |
-          pip install pyinstaller
           pip install -r requirements.txt
-
-      - name: Build EXE
-        # 打包成单个exe文件，忽略控制台隐藏等复杂配置，确保能跑就行
-        run: |
-          pyinstaller -F main.py
-
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
-        with:
-          name: stock-app
-          path: dist/main.exe
-          retention-days: 1
-
-  # --- 任务2: 本地运行 (在你家电脑上进行) ---
-  run_local:
-    needs: build_exe  # 等打包好了再跑
-    runs-on: self-hosted  # <--- 这里指向你的电脑
-    
-    steps:
-      - name: Clean Workspace
-        run: |
-          if (Test-Path ./*.xlsx) { Remove-Item ./*.xlsx }
-          if (Test-Path ./KLine_Charts) { Remove-Item ./KLine_Charts -Recurse }
-
-      - name: Download EXE
-        uses: actions/download-artifact@v4
-        with:
-          name: stock-app
-
-      - name: Run Application
-        # 直接运行exe，无需Python环境
-        run: |
-          .\main.exe
-
-      - name: Upload Excel Result
+          
+      - name: Run Script
+        run: python main.py
+        
+      - name: Upload Excel
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Result-Excel
           path: "*.xlsx"
           
-      - name: Upload Charts Result
+      - name: Upload Charts
         if: always()
         uses: actions/upload-artifact@v4
         with:
