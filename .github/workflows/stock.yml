@@ -2,18 +2,21 @@ name: 每日A股自动选股
 
 on:
   schedule:
-    - cron: '30 7 * * 1-5'   # 北京时间 15:30（UTC+8）
-  workflow_dispatch:        # 允许手动运行
+    - cron: '30 7 * * 1-5'   # UTC 7:30 = 北京时间 15:30
+  workflow_dispatch:        # 手动运行
 
 jobs:
   run-stock-selection:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 拉取仓库代码
+    - name: Checkout 仓库
       uses: actions/checkout@v4
+      with:
+        # 避免嵌套多层目录
+        path: .
 
-    - name: 设置 Python 环境
+    - name: 设置 Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
@@ -23,8 +26,7 @@ jobs:
         pip install akshare pandas numpy matplotlib ta openpyxl
 
     - name: 运行选股程序
-      run: |
-        python stock_selection.py
+      run: python ./stock_selection.py
 
     - name: 上传选股结果
       uses: actions/upload-artifact@v4
