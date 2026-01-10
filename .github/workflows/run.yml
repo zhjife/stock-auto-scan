@@ -1,24 +1,55 @@
-name: Run Stock Scan
-on: workflow_dispatch  # 允许手机手动点击运行
+name: Build and Run Stock Scan
+
+on: workflow_dispatch  # 手机手动触发
 
 jobs:
-  stock_job:
-    runs-on: ubuntu-latest
+  # --- 第一步：在云端把代码打包成 EXE ---
+  build_exe:
+    runs-on: windows-latest  # 使用 GitHub 的云端 Windows 电脑
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          
-      - name: Install Libs
+          cache: 'pip'
+
+      - name: Install Dependencies
+        # 安装 PyInstaller 和你的脚本需要的库
         run: |
+          pip install pyinstaller
           pip install -r requirements.txt
-          
-      - name: Run Script
-        run: python main.py
-        
+
+      - name: Build EXE
+        # 使用 PyInstaller 把 main.py 打包成 main.exe
+        # -F 表示打包成单个文件
+        run: |
+          pyinstaller -F main.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-scanner-app
+          path: dist/main.exe
+          retention-days: 1
+
+  # --- 第二步：在你家电脑上运行 EXE ---
+  run_on_local_pc:
+    needs: build_exe  # 必须等打包做完了才能开始跑
+    runs-on: self-hosted  # <--- 指定你家电脑
+    
+    steps:
+      - name: Download EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: stock-scanner-app
+      
+      - name: Run Stock Scanner
+        # 直接运行 EXE，不需要 Python
+        run: |
+          .\main.exe
+
       - name: Upload Excel
         if: always()
         uses: actions/upload-artifact@v4
