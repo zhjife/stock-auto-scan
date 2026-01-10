@@ -1,63 +1,66 @@
-name: Build and Run Stock Scan
+name: Build and Run (No Python Needed)
 
-on: workflow_dispatch  # 手机手动触发
+on: workflow_dispatch
 
 jobs:
-  # --- 第一步：在云端把代码打包成 EXE ---
+  # --- 任务1: 云端打包 (在美国服务器上进行) ---
   build_exe:
-    runs-on: windows-latest  # 使用 GitHub 的云端 Windows 电脑
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Set up Python (Cloud)
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
           cache: 'pip'
 
       - name: Install Dependencies
-        # 安装 PyInstaller 和你的脚本需要的库
         run: |
           pip install pyinstaller
           pip install -r requirements.txt
 
       - name: Build EXE
-        # 使用 PyInstaller 把 main.py 打包成 main.exe
-        # -F 表示打包成单个文件
+        # 打包成单个exe文件，忽略控制台隐藏等复杂配置，确保能跑就行
         run: |
           pyinstaller -F main.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: stock-scanner-app
+          name: stock-app
           path: dist/main.exe
           retention-days: 1
 
-  # --- 第二步：在你家电脑上运行 EXE ---
-  run_on_local_pc:
-    needs: build_exe  # 必须等打包做完了才能开始跑
-    runs-on: self-hosted  # <--- 指定你家电脑
+  # --- 任务2: 本地运行 (在你家电脑上进行) ---
+  run_local:
+    needs: build_exe  # 等打包好了再跑
+    runs-on: self-hosted  # <--- 这里指向你的电脑
     
     steps:
+      - name: Clean Workspace
+        run: |
+          if (Test-Path ./*.xlsx) { Remove-Item ./*.xlsx }
+          if (Test-Path ./KLine_Charts) { Remove-Item ./KLine_Charts -Recurse }
+
       - name: Download EXE
         uses: actions/download-artifact@v4
         with:
-          name: stock-scanner-app
-      
-      - name: Run Stock Scanner
-        # 直接运行 EXE，不需要 Python
+          name: stock-app
+
+      - name: Run Application
+        # 直接运行exe，无需Python环境
         run: |
           .\main.exe
 
-      - name: Upload Excel
+      - name: Upload Excel Result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Result-Excel
           path: "*.xlsx"
           
-      - name: Upload Charts
+      - name: Upload Charts Result
         if: always()
         uses: actions/upload-artifact@v4
         with:
