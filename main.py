@@ -8,9 +8,18 @@ from datetime import datetime, timedelta
 import os
 import urllib.request
 import traceback
-import time  # 用于延时
+import time
+import sys
 
-# --- 1. 基础配置 ---
+# --- 1. 基础环境配置 ---
+# 判断是否打包环境（兼容云端打包模式）
+if getattr(sys, 'frozen', False):
+    application_path = os.path.dirname(sys.executable)
+else:
+    application_path = os.path.dirname(os.path.abspath(__file__))
+
+os.chdir(application_path)
+
 plt.switch_backend("Agg")
 SAVE_DIR = "KLine_Charts"
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -19,7 +28,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 with open(os.path.join(SAVE_DIR, "init.txt"), "w") as f:
     f.write("Folder initialized.")
 
-MIN_DAYS = 60  # 最少需要的数据天数
+MIN_DAYS = 60
 VOL_RATIO = 1.5
 
 # --- 2. 字体配置 (静默模式) ---
@@ -27,14 +36,11 @@ def config_font():
     font_path = "SimHei.ttf"
     try:
         if not os.path.exists(font_path):
-            # 备用：如果Github下载慢，这里不强求，直接返回None用英文
             url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
-            # 设置超时时间为 5 秒，下载不下来就算了
             try:
                 urllib.request.urlretrieve(url, font_path)
             except:
                 pass 
-        
         if os.path.exists(font_path):
             return fm.FontProperties(fname=font_path)
     except:
@@ -43,10 +49,10 @@ def config_font():
 
 my_font = config_font()
 
-# --- 3. 网络重试函数 (关键修改) ---
+# --- 3. 网络重试函数 ---
 def get_data_with_retry(code, start_date):
     """尝试获取数据，如果失败自动重试3次"""
-    for i in range(3):  # 最多尝试3次
+    for i in range(3):
         try:
             df = ak.stock_zh_a_hist(
                 symbol=code, 
@@ -55,11 +61,9 @@ def get_data_with_retry(code, start_date):
                 adjust="qfq"
             )
             return df
-        except Exception as e:
-            if i == 2: # 最后一次也失败
-                # print(f"{code} 获取失败: {e}")
-                return None
-            time.sleep(2) # 休息2秒再重试
+        except Exception:
+            if i == 2: return None
+            time.sleep(2)
     return None
 
 # --- 4. 指标计算 ---
@@ -105,10 +109,11 @@ def plot_kline(df, code, name, tag):
         plt.legend()
         
         safe_name = name if my_font else "Stock"
+        title_str = f"{code} {safe_name} {tag}"
         if my_font:
-            plt.title(f"{code} {safe_name} {tag}", fontproperties=my_font)
+            plt.title(title_str, fontproperties=my_font)
         else:
-            plt.title(f"{code} {tag}")
+            plt.title(title_str)
             
         plt.tight_layout()
         plt.savefig(f"{SAVE_DIR}/{code}_{tag}.png")
@@ -118,35 +123,39 @@ def plot_kline(df, code, name, tag):
 
 # --- 5. 主程序 ---
 def main():
-    print("程序启动...")
+    print("程序启动...正在获取股票列表...")
     result = []
     
     try:
-        print("正在获取股票列表...")
         stock_list = ak.stock_info_a_code_name()
+        
+        # --- 修改点：严格筛选 ---
+        # 仅保留 "60" (沪市主板) 和 "00" (深市主板)
+        # 自动排除了 "30"(创业板), "688"(科创板), "8/4"(北交所)
         targets = stock_list[stock_list["code"].str.startswith(("60", "00"))]
         
-        # --- 测试开关 ---
-        # 建议先跑前30个测试网络，成功后再把下面这行删掉
-        targets = targets.head(30) 
-        # ---------------
-        
-        # 动态设置开始时间：只取最近180天的数据，减少流量，提高成功率
+        # 动态设置开始时间
         start_dt = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
         
-        print(f"待扫描: {len(targets)} 只, 开始日期: {start_dt}")
+        total_stocks = len(targets)
+        print(f"筛选后剩余 {total_stocks} 只 (仅沪深主板), 数据起点: {start_dt}")
+        print("注意：全量扫描耗时较长，请保持电脑运行...")
 
+        count = 0
         for _, s in targets.iterrows():
             code = s["code"]
             name = s["name"]
+            count += 1
             
-            # 使用带重试机制的获取函数
+            # 简单的进度显示
+            if count % 100 == 0:
+                print(f"进度: {count}/{total_stocks}...")
+
             df = get_data_with_retry(code, start_dt)
             
             if df is None or df.empty or len(df) < MIN_DAYS:
                 continue
             
-            # 数据清洗
             try:
                 df.rename(columns={"日期":"date","开盘":"open","收盘":"close","最高":"high","最低":"low","成交量":"volume"}, inplace=True)
                 df["date"] = pd.to_datetime(df["date"])
@@ -155,26 +164,26 @@ def main():
                 df = add_indicators(df)
                 
                 if check_conditions(df):
-                    print(f"选中: {code}")
+                    print(f"发现目标: {code} {name}")
                     result.append([code, name])
                     plot_kline(df.tail(100), code, name, "Daily")
             except:
                 continue
-                
-            # 【重要】每跑完一只，暂停 0.5 秒，防止被封 IP
-            time.sleep(0.5)
+            
+            # 必须保留延时，防止被封IP
+            time.sleep(0.3) 
 
     except Exception as e:
-        print(f"主程序报错: {e}")
+        print(f"程序出错: {e}")
+        traceback.print_exc()
 
-    # 保存结果
     dt_str = datetime.now().strftime("%Y%m%d")
-    
-    # 无论有无结果，都生成 Excel，避免 Actions 报错
     if len(result) > 0:
         pd.DataFrame(result, columns=["代码", "名称"]).to_excel(f"Result_{dt_str}.xlsx", index=False)
+        print(f"完成！共选中 {len(result)} 只。")
     else:
-        pd.DataFrame([["无", "无符合条件或网络错误"]], columns=["代码", "状态"]).to_excel(f"Empty_Result_{dt_str}.xlsx", index=False)
+        pd.DataFrame([["无", "无符合条件"]], columns=["代码", "状态"]).to_excel(f"Empty_Result_{dt_str}.xlsx", index=False)
+        print("完成，未选中任何股票。")
 
 if __name__ == "__main__":
     main()
