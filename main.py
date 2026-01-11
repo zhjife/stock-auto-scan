@@ -1,189 +1,261 @@
 import akshare as ak
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+import numpy as np
 from ta.trend import MACD
-from ta.momentum import StochasticOscillator
+from ta.momentum import StochasticOscillator, RSIIndicator
+from ta.volatility import BollingerBands
+from ta.volume import OnBalanceVolumeIndicator
 from datetime import datetime, timedelta
 import os
-import urllib.request
-import traceback
 import time
 import sys
+import traceback
 
-# --- 1. 基础环境配置 ---
-# 判断是否打包环境（兼容云端打包模式）
-if getattr(sys, 'frozen', False):
-    application_path = os.path.dirname(sys.executable)
-else:
-    application_path = os.path.dirname(os.path.abspath(__file__))
+# --- 1. 环境初始化 ---
+current_dir = os.getcwd()
+sys.path.append(current_dir)
 
-os.chdir(application_path)
-
-plt.switch_backend("Agg")
-SAVE_DIR = "KLine_Charts"
-os.makedirs(SAVE_DIR, exist_ok=True)
-
-# 创建占位文件
-with open(os.path.join(SAVE_DIR, "init.txt"), "w") as f:
-    f.write("Folder initialized.")
-
-MIN_DAYS = 60
-VOL_RATIO = 1.5
-
-# --- 2. 字体配置 (静默模式) ---
-def config_font():
-    font_path = "SimHei.ttf"
+# --- 2. 获取热点板块 (保持逻辑) ---
+def get_hot_stock_pool():
+    print(">>> 正在扫描市场热点 (行业 & 概念 Top 8)...")
+    hot_codes = set()
     try:
-        if not os.path.exists(font_path):
-            url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
+        # 行业
+        df_ind = ak.stock_board_industry_name_em()
+        top_ind = df_ind.sort_values(by="涨跌幅", ascending=False).head(8)
+        print(f"🔥 热门行业: {top_ind['板块名称'].tolist()}")
+        for board in top_ind['板块名称']:
             try:
-                urllib.request.urlretrieve(url, font_path)
-            except:
-                pass 
-        if os.path.exists(font_path):
-            return fm.FontProperties(fname=font_path)
+                df = ak.stock_board_industry_cons_em(symbol=board)
+                hot_codes.update(df['代码'].tolist())
+            except: pass
+            time.sleep(0.3)
+
+        # 概念
+        df_con = ak.stock_board_concept_name_em()
+        top_con = df_con.sort_values(by="涨跌幅", ascending=False).head(8)
+        print(f"🔥 热门概念: {top_con['板块名称'].tolist()}")
+        for board in top_con['板块名称']:
+            try:
+                df = ak.stock_board_concept_cons_em(symbol=board)
+                hot_codes.update(df['代码'].tolist())
+            except: pass
+            time.sleep(0.3)
+            
+        print(f">>> 热点池共 {len(hot_codes)} 只")
+        return hot_codes
     except:
-        pass
-    return None
+        print("热点获取失败，降级为全量扫描")
+        return None
 
-my_font = config_font()
+# --- 3. 获取列表 ---
+def get_targets():
+    # 优先获取全量主板
+    try:
+        df = ak.stock_zh_a_spot_em()
+        df = df[["代码", "名称"]]
+        df.columns = ["code", "name"]
+    except:
+        df = ak.stock_info_a_code_name()
+    
+    # 筛选主板
+    all_main = df[df["code"].str.startswith(("60", "00"))]
+    
+    # 热点过滤
+    hot_pool = get_hot_stock_pool()
+    if hot_pool:
+        targets = all_main[all_main["code"].isin(hot_pool)]
+        print(f"过滤后剩余: {len(targets)} 只")
+        return targets
+    return all_main
 
-# --- 3. 网络重试函数 ---
+# --- 4. 数据获取 ---
 def get_data_with_retry(code, start_date):
-    """尝试获取数据，如果失败自动重试3次"""
     for i in range(3):
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, 
-                period="daily", 
-                start_date=start_date, 
-                adjust="qfq"
-            )
+            df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
+            if df is None or df.empty: raise ValueError("Empty")
             return df
-        except Exception:
-            if i == 2: return None
-            time.sleep(2)
+        except:
+            time.sleep(1)
     return None
 
-# --- 4. 指标计算 ---
-def add_indicators(df):
+# --- 5. 核心计算 (含避坑过滤器) ---
+def process_stock(df):
+    if len(df) < 60: return None
+    
+    # === 基础指标 ===
     df["MA5"] = df["close"].rolling(5).mean()
     df["MA10"] = df["close"].rolling(10).mean()
     df["MA20"] = df["close"].rolling(20).mean()
     df["MA60"] = df["close"].rolling(60).mean()
     
-    macd = MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
+    # 量比
+    vol_ma5 = df["volume"].rolling(5).mean()
+    vol_ratio = 0 if vol_ma5.iloc[-1] == 0 else round(df["volume"].iloc[-1] / vol_ma5.iloc[-1], 2)
+
+    # MACD
+    macd = MACD(df["close"])
     df["DIF"] = macd.macd()
     df["DEA"] = macd.macd_signal()
+    df["MACD_Hist"] = macd.macd_diff()
     
-    kdj = StochasticOscillator(df["high"], df["low"], df["close"], window=9, smooth_window=3)
+    # KDJ
+    kdj = StochasticOscillator(df["high"], df["low"], df["close"])
     df["K"] = kdj.stoch()
     df["D"] = kdj.stoch_signal()
-    
-    df["VOL_MA5"] = df["volume"].rolling(5).mean()
-    return df
 
-def check_conditions(df):
-    if len(df) < 60: return False
+    # 布林带 (BOLL)
+    boll = BollingerBands(close=df["close"], window=20, window_dev=2)
+    df["BOLL_High"] = boll.bollinger_hband()
+    df["BOLL_Mid"] = boll.bollinger_mavg()
     
+    # RSI
+    rsi_ind = RSIIndicator(close=df["close"], window=14)
+    df["RSI"] = rsi_ind.rsi()
+    
+    # OBV
+    obv_ind = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"])
+    df["OBV"] = obv_ind.on_balance_volume()
+    df["OBV_MA10"] = df["OBV"].rolling(10).mean()
+
+    # === 信号判定 ===
     curr = df.iloc[-1]
     prev = df.iloc[-2]
+    if pd.isna(curr['MA60']): return None
+
+    # 1. 信号搜集
+    s_macd = (prev["DIF"] < prev["DEA"] and curr["DIF"] > curr["DEA"] and curr["MACD_Hist"] > prev["MACD_Hist"])
+    s_kdj = (prev["K"] < prev["D"] and curr["K"] > curr["D"])
+    s_ma_bull = (curr["MA5"] > curr["MA10"] > curr["MA20"] > curr["MA60"])
+    is_near_gold = (curr["DIF"] < curr["DEA"]) and (curr["DEA"] - curr["DIF"] < 0.05) and (curr["DIF"] > prev["DIF"])
     
-    if pd.isna(curr['MA60']) or pd.isna(curr['VOL_MA5']): return False
+    # 底背离
+    is_divergence = False
+    last_60_low_idx = df["low"].tail(60).idxmin()
+    if last_60_low_idx != curr.name:
+        if curr["close"] < df.loc[last_60_low_idx, "low"] * 1.05:
+            if curr["DIF"] > df.loc[last_60_low_idx, "DIF"] + 0.1:
+                is_divergence = True
 
-    macd_gold = prev["DIF"] < prev["DEA"] and curr["DIF"] > curr["DEA"]
-    kdj_gold = prev["K"] < prev["D"] and curr["K"] > curr["D"]
-    ma_bull = curr["MA5"] > curr["MA10"] > curr["MA20"] > curr["MA60"]
-    vol_ok = curr["volume"] > VOL_RATIO * curr["VOL_MA5"]
+    # 综合买点信号
+    has_buy_signal = s_macd or s_kdj or s_ma_bull or is_near_gold or is_divergence
+
+    if not has_buy_signal:
+        return None
+
+    # ==========================================
+    # 🛡️ 避坑过滤器 (Pitfall Filters) - 关键修改
+    # ==========================================
     
-    return macd_gold and kdj_gold and ma_bull and vol_ok
+    # 1. 弱势过滤: 股价还在布林带中轨之下 -> 剔除
+    # 即使金叉了，如果被中轨压制，往往是假突破
+    if curr["close"] < curr["BOLL_Mid"]:
+        return None 
 
-def plot_kline(df, code, name, tag):
-    try:
-        plt.figure(figsize=(10, 5))
-        plt.plot(df.index, df["close"], label="Close")
-        for ma in [5, 10, 20, 60]:
-            if f"MA{ma}" in df.columns:
-                plt.plot(df.index, df[f"MA{ma}"], label=f"MA{ma}")
-        plt.legend()
-        
-        safe_name = name if my_font else "Stock"
-        title_str = f"{code} {safe_name} {tag}"
-        if my_font:
-            plt.title(title_str, fontproperties=my_font)
-        else:
-            plt.title(title_str)
-            
-        plt.tight_layout()
-        plt.savefig(f"{SAVE_DIR}/{code}_{tag}.png")
-        plt.close()
-    except:
-        pass
+    # 2. 资金背离过滤: 资金流出 (OBV < 10日均线) -> 剔除
+    # 即使涨了，如果是缩量或者主力在跑，剔除
+    if curr["OBV"] < curr["OBV_MA10"]:
+        return None
 
-# --- 5. 主程序 ---
+    # 3. 超买过滤: RSI > 80 -> 剔除
+    # 风险太高，容易站岗
+    if curr["RSI"] > 80:
+        return None
+
+    # ==========================================
+    # 通过了所有体检，才允许返回数据
+    # ==========================================
+
+    return {
+        "close": curr["close"],
+        "vol_ratio": vol_ratio,
+        "rsi": round(curr["RSI"], 1),
+        "macd_gold": "真金叉" if s_macd else "",
+        "near_gold": "预警" if is_near_gold else "",
+        "divergence": "底背离" if is_divergence else "",
+        "kdj_gold": "是" if s_kdj else "",
+        "ma_bull": "是" if s_ma_bull else "",
+        # 显示辅助状态
+        "boll_status": "突破上轨" if curr["close"] > curr["BOLL_High"] else "安全区",
+        "obv_status": "资金流入" # 能走到这步，肯定是因为资金在流入
+    }
+
+# --- 6. 主程序 ---
 def main():
-    print("程序启动...正在获取股票列表...")
-    result = []
+    print("=== 精英选股启动 (避坑过滤版) ===")
+    pd.DataFrame([["Init", "OK"]]).to_excel("Init_Check.xlsx", index=False)
     
     try:
-        stock_list = ak.stock_info_a_code_name()
+        targets = get_targets()
         
-        # --- 修改点：严格筛选 ---
-        # 仅保留 "60" (沪市主板) 和 "00" (深市主板)
-        # 自动排除了 "30"(创业板), "688"(科创板), "8/4"(北交所)
-        targets = stock_list[stock_list["code"].str.startswith(("60", "00"))]
+        # --- 测试开关 ---
+        # targets = targets.head(50) 
+        # ----------------
         
-        # 动态设置开始时间
         start_dt = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
+        result_data = []
         
-        total_stocks = len(targets)
-        print(f"筛选后剩余 {total_stocks} 只 (仅沪深主板), 数据起点: {start_dt}")
-        print("注意：全量扫描耗时较长，请保持电脑运行...")
+        total = len(targets)
+        print(f"开始深度扫描 {total} 只股票 (已开启强力过滤)...")
 
-        count = 0
-        for _, s in targets.iterrows():
+        for i, s in targets.iterrows():
             code = s["code"]
             name = s["name"]
-            count += 1
             
-            # 简单的进度显示
-            if count % 100 == 0:
-                print(f"进度: {count}/{total_stocks}...")
+            if i % 20 == 0: print(f"进度: {i}/{total} ...")
 
-            df = get_data_with_retry(code, start_dt)
-            
-            if df is None or df.empty or len(df) < MIN_DAYS:
-                continue
-            
             try:
+                df = get_data_with_retry(code, start_dt)
+                if df is None: continue
+
                 df.rename(columns={"日期":"date","开盘":"open","收盘":"close","最高":"high","最低":"low","成交量":"volume"}, inplace=True)
                 df["date"] = pd.to_datetime(df["date"])
                 df.set_index("date", inplace=True)
+
+                res = process_stock(df)
                 
-                df = add_indicators(df)
-                
-                if check_conditions(df):
-                    print(f"发现目标: {code} {name}")
-                    result.append([code, name])
-                    plot_kline(df.tail(100), code, name, "Daily")
-            except:
-                continue
+                if res:
+                    # 只有通过避坑指南的股票才会出现在这里
+                    if res['macd_gold'] and res['vol_ratio'] > 1.5:
+                        print(f"  ★ 极品: {code} {name} (量比:{res['vol_ratio']}, RSI:{res['rsi']})")
+                    
+                    result_data.append({
+                        "代码": code,
+                        "名称": name,
+                        "现价": res["close"],
+                        "量比": res["vol_ratio"],
+                        "RSI数值": res["rsi"],
+                        "MACD真金叉": res["macd_gold"],
+                        "即将金叉": res["near_gold"],
+                        "底背离": res["divergence"],
+                        "KDJ金叉": res["kdj_gold"],
+                        "均线多头": res["ma_bull"],
+                        "资金状态": res["obv_status"],
+                        "通道状态": res["boll_status"]
+                    })
+            except: continue
+            time.sleep(0.05)
+
+        dt_str = datetime.now().strftime("%Y%m%d")
+        if result_data:
+            cols = ["代码", "名称", "现价", "量比", "RSI数值", 
+                    "MACD真金叉", "即将金叉", "底背离", 
+                    "资金状态", "通道状态",
+                    "KDJ金叉", "均线多头"]
             
-            # 必须保留延时，防止被封IP
-            time.sleep(0.3) 
+            df_res = pd.DataFrame(result_data, columns=cols)
+            # 排序：优先看真金叉且量比大的
+            df_res = df_res.sort_values(by=["MACD真金叉", "量比"], ascending=False)
+            
+            filename = f"精品选股结果_{dt_str}.xlsx"
+            df_res.to_excel(filename, index=False)
+            print(f"完成！已保存: {filename}")
+        else:
+            pd.DataFrame([["无"]]).to_excel(f"无结果_{dt_str}.xlsx")
 
-    except Exception as e:
-        print(f"程序出错: {e}")
-        traceback.print_exc()
-
-    dt_str = datetime.now().strftime("%Y%m%d")
-    if len(result) > 0:
-        pd.DataFrame(result, columns=["代码", "名称"]).to_excel(f"Result_{dt_str}.xlsx", index=False)
-        print(f"完成！共选中 {len(result)} 只。")
-    else:
-        pd.DataFrame([["无", "无符合条件"]], columns=["代码", "状态"]).to_excel(f"Empty_Result_{dt_str}.xlsx", index=False)
-        print("完成，未选中任何股票。")
+    except Exception:
+        with open("FATAL_ERROR.txt", "w") as f: f.write(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
