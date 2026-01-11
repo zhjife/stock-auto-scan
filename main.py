@@ -15,7 +15,49 @@ import traceback
 current_dir = os.getcwd()
 sys.path.append(current_dir)
 
-# --- 2. 获取热点板块 (保持逻辑) ---
+# --- 2. 获取股票列表 (方案A/B/C 铜墙铁壁版) ---
+def get_targets_robust():
+    print(">>> 开始获取股票列表...")
+    
+    # 方案 A: 东方财富接口
+    try:
+        print("尝试方案 A (东方财富)...")
+        df = ak.stock_zh_a_spot_em()
+        df = df[["代码", "名称"]]
+        df.columns = ["code", "name"]
+        targets = df[df["code"].str.startswith(("60", "00"))]
+        print(f"✅ 方案 A 成功！获取到 {len(targets)} 只股票")
+        return targets, "方案A-东财(全量)"
+    except Exception as e:
+        print(f"❌ 方案 A 失败: {e}")
+
+    # 方案 B: 新浪财经接口
+    try:
+        print("尝试方案 B (新浪财经)...")
+        df = ak.stock_zh_a_spot()
+        df = df[["symbol", "name"]]
+        df.columns = ["code", "name"]
+        targets = df[df["code"].str.startswith(("sh60", "sz00"))]
+        targets["code"] = targets["code"].str.replace("sh", "").str.replace("sz", "")
+        print(f"✅ 方案 B 成功！获取到 {len(targets)} 只股票")
+        return targets, "方案B-新浪(全量)"
+    except Exception as e:
+        print(f"❌ 方案 B 失败: {e}")
+
+    # 方案 C: 离线保底模式
+    print(">>> ⚠️ 警告：在线接口全部失败，切换到【离线精选模式】")
+    manual_list = [
+        ["600519", "贵州茅台"], ["000858", "五粮液"], ["600887", "伊利股份"], ["601888", "中国中免"],
+        ["002594", "比亚迪"], ["300750", "宁德时代"], ["601012", "隆基绿能"], ["002475", "立讯精密"],
+        ["002415", "海康威视"], ["000725", "京东方A"], ["600438", "通威股份"],
+        ["601318", "中国平安"], ["600036", "招商银行"], ["600030", "中信证券"], ["000001", "平安银行"],
+        ["600276", "恒瑞医药"], ["300760", "迈瑞医疗"], ["603259", "药明康德"],
+        ["601668", "中国建筑"], ["600900", "长江电力"], ["600009", "上海机场"], ["000333", "美的集团"],
+        ["000651", "格力电器"], ["601857", "中国石油"], ["600028", "中国石化"], ["601088", "中国神华"]
+    ]
+    return pd.DataFrame(manual_list, columns=["code", "name"]), "方案C-离线(保底)"
+
+# --- 3. 获取热点板块 ---
 def get_hot_stock_pool():
     print(">>> 正在扫描市场热点 (行业 & 概念 Top 8)...")
     hot_codes = set()
@@ -45,29 +87,8 @@ def get_hot_stock_pool():
         print(f">>> 热点池共 {len(hot_codes)} 只")
         return hot_codes
     except:
-        print("热点获取失败，降级为全量扫描")
+        print("热点获取失败，将使用基础列表")
         return None
-
-# --- 3. 获取列表 ---
-def get_targets():
-    # 优先获取全量主板
-    try:
-        df = ak.stock_zh_a_spot_em()
-        df = df[["代码", "名称"]]
-        df.columns = ["code", "name"]
-    except:
-        df = ak.stock_info_a_code_name()
-    
-    # 筛选主板
-    all_main = df[df["code"].str.startswith(("60", "00"))]
-    
-    # 热点过滤
-    hot_pool = get_hot_stock_pool()
-    if hot_pool:
-        targets = all_main[all_main["code"].isin(hot_pool)]
-        print(f"过滤后剩余: {len(targets)} 只")
-        return targets
-    return all_main
 
 # --- 4. 数据获取 ---
 def get_data_with_retry(code, start_date):
@@ -80,7 +101,7 @@ def get_data_with_retry(code, start_date):
             time.sleep(1)
     return None
 
-# --- 5. 核心计算 (含避坑过滤器) ---
+# --- 5. 核心计算 (包含避坑过滤器) ---
 def process_stock(df):
     if len(df) < 60: return None
     
@@ -145,26 +166,23 @@ def process_stock(df):
         return None
 
     # ==========================================
-    # 🛡️ 避坑过滤器 (Pitfall Filters) - 关键修改
+    # 🛡️ 避坑过滤器 (Pitfall Filters)
     # ==========================================
     
     # 1. 弱势过滤: 股价还在布林带中轨之下 -> 剔除
-    # 即使金叉了，如果被中轨压制，往往是假突破
     if curr["close"] < curr["BOLL_Mid"]:
         return None 
 
     # 2. 资金背离过滤: 资金流出 (OBV < 10日均线) -> 剔除
-    # 即使涨了，如果是缩量或者主力在跑，剔除
     if curr["OBV"] < curr["OBV_MA10"]:
         return None
 
     # 3. 超买过滤: RSI > 80 -> 剔除
-    # 风险太高，容易站岗
     if curr["RSI"] > 80:
         return None
 
     # ==========================================
-    # 通过了所有体检，才允许返回数据
+    # 通过所有体检
     # ==========================================
 
     return {
@@ -178,21 +196,34 @@ def process_stock(df):
         "ma_bull": "是" if s_ma_bull else "",
         # 显示辅助状态
         "boll_status": "突破上轨" if curr["close"] > curr["BOLL_High"] else "安全区",
-        "obv_status": "资金流入" # 能走到这步，肯定是因为资金在流入
+        "obv_status": "资金流入"
     }
 
 # --- 6. 主程序 ---
 def main():
-    print("=== 精英选股启动 (避坑过滤版) ===")
+    print("=== 精英选股启动 (避坑版 + 来源显示) ===")
     pd.DataFrame([["Init", "OK"]]).to_excel("Init_Check.xlsx", index=False)
     
     try:
-        targets = get_targets()
+        # 1. 获取基础列表和来源名称
+        base_targets, source_name = get_targets_robust()
+        print(f"当前基础数据源: {source_name}")
         
-        # --- 测试开关 ---
-        # targets = targets.head(50) 
-        # ----------------
+        # 2. 尝试热点过滤
+        hot_pool = get_hot_stock_pool()
         
+        final_source_tag = source_name
+        
+        # 只有在网络正常(非离线模式)且热点获取成功时，才进行热点过滤
+        if hot_pool and len(base_targets) > 100:
+            print("正在进行热点过滤...")
+            targets = base_targets[base_targets["code"].isin(hot_pool)]
+            final_source_tag = f"{source_name} + 热点过滤"
+            print(f"热点过滤后剩余: {len(targets)} 只")
+        else:
+            print("跳过热点过滤 (使用基础列表)")
+            targets = base_targets
+
         start_dt = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
         result_data = []
         
@@ -216,9 +247,8 @@ def main():
                 res = process_stock(df)
                 
                 if res:
-                    # 只有通过避坑指南的股票才会出现在这里
                     if res['macd_gold'] and res['vol_ratio'] > 1.5:
-                        print(f"  ★ 极品: {code} {name} (量比:{res['vol_ratio']}, RSI:{res['rsi']})")
+                        print(f"  ★ 极品: {code} {name} (量比:{res['vol_ratio']})")
                     
                     result_data.append({
                         "代码": code,
@@ -232,20 +262,22 @@ def main():
                         "KDJ金叉": res["kdj_gold"],
                         "均线多头": res["ma_bull"],
                         "资金状态": res["obv_status"],
-                        "通道状态": res["boll_status"]
+                        "通道状态": res["boll_status"],
+                        "数据来源": final_source_tag  # <--- 新增列
                     })
             except: continue
             time.sleep(0.05)
 
         dt_str = datetime.now().strftime("%Y%m%d")
         if result_data:
+            # 包含所有信息的列
             cols = ["代码", "名称", "现价", "量比", "RSI数值", 
                     "MACD真金叉", "即将金叉", "底背离", 
                     "资金状态", "通道状态",
-                    "KDJ金叉", "均线多头"]
+                    "KDJ金叉", "均线多头", "数据来源"]
             
             df_res = pd.DataFrame(result_data, columns=cols)
-            # 排序：优先看真金叉且量比大的
+            # 排序
             df_res = df_res.sort_values(by=["MACD真金叉", "量比"], ascending=False)
             
             filename = f"精品选股结果_{dt_str}.xlsx"
