@@ -4,7 +4,8 @@ import numpy as np
 from ta.trend import MACD
 from ta.momentum import StochasticOscillator, RSIIndicator
 from ta.volatility import BollingerBands
-from ta.volume import OnBalanceVolumeIndicator
+# 修改点1：引入 ChaikinMoneyFlowIndicator
+from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator
 from datetime import datetime, timedelta
 import os
 import time
@@ -101,7 +102,7 @@ def get_data_with_retry(code, start_date):
             time.sleep(1)
     return None
 
-# --- 5. 核心计算 (包含避坑过滤器) ---
+# --- 5. 核心计算 (包含新逻辑) ---
 def process_stock(df):
     if len(df) < 60: return None
     
@@ -135,23 +136,28 @@ def process_stock(df):
     rsi_ind = RSIIndicator(close=df["close"], window=14)
     df["RSI"] = rsi_ind.rsi()
     
-    # OBV
+    # OBV (能量潮)
     obv_ind = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"])
     df["OBV"] = obv_ind.on_balance_volume()
     df["OBV_MA10"] = df["OBV"].rolling(10).mean()
+
+    # 修改点2：增加 CMF (Chaikin Money Flow) 计算
+    # 20日周期，衡量机构资金流向，正数代表流入，负数代表流出
+    cmf_ind = ChaikinMoneyFlowIndicator(high=df["high"], low=df["low"], close=df["close"], volume=df["volume"], window=20)
+    df["CMF"] = cmf_ind.chaikin_money_flow()
 
     # === 信号判定 ===
     curr = df.iloc[-1]
     prev = df.iloc[-2]
     if pd.isna(curr['MA60']): return None
 
-    # 1. 信号搜集
+    # 1. MACD 相关信号
+    # 真金叉：DIF 上穿 DEA，且红柱变长
     s_macd = (prev["DIF"] < prev["DEA"] and curr["DIF"] > curr["DEA"] and curr["MACD_Hist"] > prev["MACD_Hist"])
-    s_kdj = (prev["K"] < prev["D"] and curr["K"] > curr["D"])
-    s_ma_bull = (curr["MA5"] > curr["MA10"] > curr["MA20"] > curr["MA60"])
+    # 即将金叉预警：目前死叉，但开口非常小，且DIF在回升
     is_near_gold = (curr["DIF"] < curr["DEA"]) and (curr["DEA"] - curr["DIF"] < 0.05) and (curr["DIF"] > prev["DIF"])
     
-    # 底背离
+    # 底背离 (60天内最低价创新低，但DIF没创新低)
     is_divergence = False
     last_60_low_idx = df["low"].tail(60).idxmin()
     if last_60_low_idx != curr.name:
@@ -159,14 +165,26 @@ def process_stock(df):
             if curr["DIF"] > df.loc[last_60_low_idx, "DIF"] + 0.1:
                 is_divergence = True
 
-    # 综合买点信号
-    has_buy_signal = s_macd or s_kdj or s_ma_bull or is_near_gold or is_divergence
+    # 2. 趋势相关信号
+    s_kdj = (prev["K"] < prev["D"] and curr["K"] > curr["D"]) # KDJ金叉
+    s_ma_bull = (curr["MA5"] > curr["MA10"] > curr["MA20"] > curr["MA60"]) # 均线多头
 
-    if not has_buy_signal:
+    # ==========================================
+    # 修改点3：严格选股逻辑判定
+    # ==========================================
+    
+    # 条件组 A: MACD 强势或反转信号
+    group_macd = s_macd or is_divergence or is_near_gold
+    
+    # 条件组 B: 趋势共振 (必须 KDJ金叉 且 均线多头)
+    group_trend = s_kdj and s_ma_bull
+
+    # 如果既不满足MACD组，也不满足趋势组，直接剔除
+    if not (group_macd or group_trend):
         return None
 
     # ==========================================
-    # 🛡️ 避坑过滤器 (Pitfall Filters)
+    # 🛡️ 避坑过滤器 (在满足逻辑的前提下，过滤垃圾股)
     # ==========================================
     
     # 1. 弱势过滤: 股价还在布林带中轨之下 -> 剔除
@@ -174,6 +192,7 @@ def process_stock(df):
         return None 
 
     # 2. 资金背离过滤: 资金流出 (OBV < 10日均线) -> 剔除
+    # 这里我们保留这个过滤，确保选出的票OBV状态是好的
     if curr["OBV"] < curr["OBV_MA10"]:
         return None
 
@@ -182,39 +201,40 @@ def process_stock(df):
         return None
 
     # ==========================================
-    # 通过所有体检
+    # 组装结果
     # ==========================================
+    
+    # 计算OBV描述
+    obv_val = "强力流入" if curr["OBV"] > curr["OBV_MA10"] * 1.01 else "温和流入"
+    # CMF 描述
+    cmf_val = round(curr["CMF"], 3)
 
     return {
         "close": curr["close"],
         "vol_ratio": vol_ratio,
         "rsi": round(curr["RSI"], 1),
+        "cmf": cmf_val, # 新增
+        "obv_desc": f"{obv_val}", # 修改描述
         "macd_gold": "真金叉" if s_macd else "",
         "near_gold": "预警" if is_near_gold else "",
         "divergence": "底背离" if is_divergence else "",
-        "kdj_gold": "是" if s_kdj else "",
-        "ma_bull": "是" if s_ma_bull else "",
-        # 显示辅助状态
-        "boll_status": "突破上轨" if curr["close"] > curr["BOLL_High"] else "安全区",
-        "obv_status": "资金流入"
+        "kdj_gold": "KDJ金叉" if s_kdj else "", # 修改文本方便阅读
+        "ma_bull": "多头" if s_ma_bull else "", # 修改文本方便阅读
+        "boll_status": "突破上轨" if curr["close"] > curr["BOLL_High"] else "安全区"
     }
 
 # --- 6. 主程序 ---
 def main():
-    print("=== 精英选股启动 (避坑版 + 来源显示) ===")
+    print("=== 精英选股启动 (MACD/CMF增强版) ===")
     pd.DataFrame([["Init", "OK"]]).to_excel("Init_Check.xlsx", index=False)
     
     try:
-        # 1. 获取基础列表和来源名称
         base_targets, source_name = get_targets_robust()
         print(f"当前基础数据源: {source_name}")
         
-        # 2. 尝试热点过滤
         hot_pool = get_hot_stock_pool()
-        
         final_source_tag = source_name
         
-        # 只有在网络正常(非离线模式)且热点获取成功时，才进行热点过滤
         if hot_pool and len(base_targets) > 100:
             print("正在进行热点过滤...")
             targets = base_targets[base_targets["code"].isin(hot_pool)]
@@ -228,7 +248,7 @@ def main():
         result_data = []
         
         total = len(targets)
-        print(f"开始深度扫描 {total} 只股票 (已开启强力过滤)...")
+        print(f"开始深度扫描 {total} 只股票 (严格逻辑：MACD组 或 KDJ+多头组)...")
 
         for i, s in targets.iterrows():
             code = s["code"]
@@ -247,43 +267,48 @@ def main():
                 res = process_stock(df)
                 
                 if res:
-                    if res['macd_gold'] and res['vol_ratio'] > 1.5:
-                        print(f"  ★ 极品: {code} {name} (量比:{res['vol_ratio']})")
+                    # 打印一些特别优质的信号
+                    if res['cmf'] > 0.1 and res['vol_ratio'] > 1.5:
+                         print(f"  ★ 资金抢筹: {code} {name} (CMF:{res['cmf']} 量比:{res['vol_ratio']})")
                     
                     result_data.append({
                         "代码": code,
                         "名称": name,
                         "现价": res["close"],
                         "量比": res["vol_ratio"],
-                        "RSI数值": res["rsi"],
+                        "CMF数值": res["cmf"],          # 新增列
+                        "OBV资金流向": res["obv_desc"], # 新增列
                         "MACD真金叉": res["macd_gold"],
                         "即将金叉": res["near_gold"],
                         "底背离": res["divergence"],
                         "KDJ金叉": res["kdj_gold"],
                         "均线多头": res["ma_bull"],
-                        "资金状态": res["obv_status"],
+                        "RSI数值": res["rsi"],
                         "通道状态": res["boll_status"],
-                        "数据来源": final_source_tag  # <--- 新增列
+                        "数据来源": final_source_tag
                     })
             except: continue
             time.sleep(0.05)
 
         dt_str = datetime.now().strftime("%Y%m%d")
         if result_data:
-            # 包含所有信息的列
-            cols = ["代码", "名称", "现价", "量比", "RSI数值", 
+            # 修改点4：调整Excel输出顺序，突出资金和核心信号
+            cols = ["代码", "名称", "现价", "量比", 
+                    "CMF数值", "OBV资金流向", # 资金面优先
                     "MACD真金叉", "即将金叉", "底背离", 
-                    "资金状态", "通道状态",
-                    "KDJ金叉", "均线多头", "数据来源"]
+                    "KDJ金叉", "均线多头", 
+                    "RSI数值", "通道状态", "数据来源"]
             
             df_res = pd.DataFrame(result_data, columns=cols)
-            # 排序
-            df_res = df_res.sort_values(by=["MACD真金叉", "量比"], ascending=False)
+            # 排序：优先看有真金叉的，其次看CMF资金流入大的
+            df_res = df_res.sort_values(by=["MACD真金叉", "CMF数值"], ascending=[False, False])
             
-            filename = f"精品选股结果_{dt_str}.xlsx"
+            filename = f"MACD_CMF_选股结果_{dt_str}.xlsx"
             df_res.to_excel(filename, index=False)
             print(f"完成！已保存: {filename}")
+            print(f"共筛选出 {len(df_res)} 只股票")
         else:
+            print("没有符合严格筛选条件的股票。")
             pd.DataFrame([["无"]]).to_excel(f"无结果_{dt_str}.xlsx")
 
     except Exception:
