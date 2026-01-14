@@ -10,7 +10,7 @@ import os
 import time
 import sys
 import traceback
-import concurrent.futures # 引入并发模块
+import concurrent.futures
 
 # --- 1. 环境初始化 ---
 current_dir = os.getcwd()
@@ -81,12 +81,10 @@ def get_hot_stock_pool():
     except:
         return None
 
-# --- 5. 数据获取 (带重试) ---
+# --- 5. 数据获取 ---
 def get_data_with_retry(code, start_date):
     for i in range(3):
         try:
-            # 增加一个微小的随机延时，防止4线程同时撞击导致API限流
-            # time.sleep(0.01 * i) 
             df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
             if df is None or df.empty: raise ValueError("Empty")
             return df
@@ -188,18 +186,13 @@ def process_stock(df):
         "kdj_gold": "是" if s_kdj else ""
     }
 
-# --- 7. 单个股票处理任务 (用于多线程) ---
+# --- 7. 单个股票处理任务 ---
 def check_stock_task(args):
-    """
-    Args 包含: (code, name, start_dt, history_df, today_str, source_tag)
-    """
     code, name, start_dt, history_df, today_str, source_tag = args
-    
     try:
         df = get_data_with_retry(code, start_dt)
         if df is None: return None
         
-        # 预处理
         df.rename(columns={"日期":"date","开盘":"open","收盘":"close","最高":"high","最低":"low","成交量":"volume"}, inplace=True)
         df["date"] = pd.to_datetime(df["date"])
         df.set_index("date", inplace=True)
@@ -207,7 +200,6 @@ def check_stock_task(args):
         res = process_stock(df)
         
         if res:
-            # 历史连选判断
             past_records = history_df[
                 (history_df["code"] == code) & 
                 (history_df["date"] != today_str)
@@ -232,13 +224,12 @@ def check_stock_task(args):
                 "KDJ金叉": res["kdj_gold"],
                 "数据源": source_tag
             }
-    except:
-        pass # 线程内忽略单个错误
+    except: pass
     return None
 
-# --- 8. 主程序 (多线程版) ---
+# --- 8. 主程序 (生成带说明书的Excel) ---
 def main():
-    print("=== 精英选股 (4线程极速版) ===")
+    print("=== 精英选股 (操作说明增强版) ===")
     start_time = time.time()
     
     history_df = load_history()
@@ -261,23 +252,16 @@ def main():
         
         print(f">>> [3/4] 启动 4 线程扫描，共 {total} 只股票...")
         
-        # 准备任务参数
         tasks = []
         for _, s in targets.iterrows():
             tasks.append((s["code"], s["name"], start_dt, history_df, today_str, source_tag))
 
-        # 开启线程池
         finished_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            # 提交所有任务
             futures = {executor.submit(check_stock_task, t): t[0] for t in tasks}
             
-            # 获取结果
             for future in concurrent.futures.as_completed(futures):
                 finished_count += 1
-                code = futures[future]
-                
-                # 简单的进度打印 (每完成10个打印一次，避免刷屏)
                 if finished_count % 10 == 0 or finished_count == total:
                     print(f"\r进度: {finished_count}/{total} ({(finished_count/total)*100:.1f}%)", end="")
                 
@@ -285,19 +269,15 @@ def main():
                     res = future.result()
                     if res:
                         result_data.append(res)
-                        # 如果发现重要的，实时打印一下
                         if res["标记"] == "★连选牛股" or res["CMF趋势"] == "★资金转正":
                             print(f"\n  🔥 发现: {res['代码']} {res['名称']} [{res['标记']}/{res['CMF趋势']}]")
-                except Exception as e:
-                    pass
+                except: pass
 
         print(f"\n>>> [4/4] 扫描完成，耗时: {int(time.time() - start_time)}秒")
 
-        # 保存结果
         if result_data:
             append_history(result_data, today_str)
             
-            # 排序：优先连选，其次资金共振，其次资金转正
             cols = ["标记", "代码", "名称", "操作建议", "3日涨跌%", 
                     "CMF趋势", "CMF今日", "MACD金叉", "底背离", 
                     "即将金叉", "量比", "资金流", "KDJ金叉", "现价", "数据源"]
@@ -311,9 +291,27 @@ def main():
             
             df_res = df_res.sort_values(by=["_rank", "CMF今日"], ascending=[False, False]).drop(columns=["_rank"])
             
-            filename = f"极速选股结果_{today_str}.xlsx"
-            df_res.to_excel(filename, index=False)
+            filename = f"选股结果_{today_str}.xlsx"
+            
+            # --- 构建说明书 Sheet ---
+            readme_data = [
+                ["策略名称", "触发条件", "操作建议 & 含义", "推荐指数"],
+                ["【积极买入】资金共振", "MACD真金叉 + CMF由负转正", "★★★ 最强信号。主力资金进场且趋势转好，爆发力强，建议重仓关注。", "5星"],
+                ["【低吸潜伏】左侧抄底", "价格创新低 + MACD未创新低 (底背离)", "★★☆ 抄底信号。股价跌不动了，主力在暗中吸筹。适合分批买入，博取反弹。", "4星"],
+                ["【右侧买点】金叉确认", "MACD发生真金叉 (DIF上穿DEA)", "★★☆ 标准信号。趋势确认转强，适合稳健型投资者跟随买入。", "3星"],
+                ["【趋势跟随】持股/做T", "KDJ金叉 + 均线多头排列", "★☆☆ 趋势延续。股价在上涨通道中。如果持有请拿住；如果要买，适合盘中低吸高抛(做T)。", "2星"],
+                ["【预警观察】等待金叉", "MACD死叉但开口极小，即将金叉", "☆☆☆ 观察名单。目前还不是买点，但随时可能形成金叉，放入自选股密切盯盘。", "1星"],
+                ["关于 CMF 指标", "Chaikin Money Flow", "衡量主力资金流向。>0代表流入，<0代表流出。'资金转正'是极佳的买入辅助信号。", ""]
+            ]
+            df_readme = pd.DataFrame(readme_data[1:], columns=readme_data[0])
+
+            # 使用 ExcelWriter 写入两个 Sheet
+            with pd.ExcelWriter(filename) as writer:
+                df_res.to_excel(writer, sheet_name='选股结果', index=False)
+                df_readme.to_excel(writer, sheet_name='策略说明书', index=False)
+
             print(f"✅ 结果已保存: {filename}")
+            print("💡 提示：Excel 底部有两个工作表，请点击 '策略说明书' 查看详细操作解释。")
         else:
             print("⚠ 未筛选出符合条件的股票")
 
