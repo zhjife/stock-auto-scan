@@ -3,5 +3,7 @@ pandas
 numpy
 tqdm
 openpyxl
+snownlp
 requests
 scipy
+lxml
