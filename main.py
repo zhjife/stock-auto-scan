@@ -409,7 +409,7 @@ class AlphaGalaxyUltimate:
         print(f"待扫描: {len(candidates)} 只...")
         
         results = []
-        with ThreadPoolExecutor(max_workers=16) as executor:
+        with ThreadPoolExecutor(max_workers=12) as executor:
             for res in tqdm(executor.map(self.analyze_one, candidates), total=len(candidates)):
                 if res: results.append(res)
         
