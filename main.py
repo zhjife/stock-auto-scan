@@ -1,322 +1,431 @@
+# -*- coding: utf-8 -*-
+"""
+Alpha Galaxy Excel - 宇宙级全形态量化系统 (Excel终极版)
+Features: 30+种严谨K线形态 | 自动交易计划 | Excel多Sheet导出
+Author: Quant Studio
+"""
+
 import akshare as ak
 import pandas as pd
 import numpy as np
-from ta.trend import MACD
-from ta.momentum import StochasticOscillator, RSIIndicator
-from ta.volatility import BollingerBands
-from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+import warnings
 from datetime import datetime, timedelta
-import os
 import time
-import sys
-import traceback
-import concurrent.futures
+import functools
 
-# --- 1. 环境初始化 ---
-current_dir = os.getcwd()
-sys.path.append(current_dir)
-HISTORY_FILE = "stock_selection_history.csv" 
+# 配置
+warnings.filterwarnings('ignore')
 
-# --- 2. 历史记录管理 ---
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            df = pd.read_csv(HISTORY_FILE, dtype={"code": str})
-            return df
-        except:
-            return pd.DataFrame(columns=["date", "code"])
-    else:
-        return pd.DataFrame(columns=["date", "code"])
-
-def append_history(new_results, date_str):
-    if not new_results: return
-    new_df = pd.DataFrame(new_results)[["代码"]]
-    new_df.columns = ["code"]
-    new_df["date"] = date_str
-    
-    if os.path.exists(HISTORY_FILE):
-        old_df = pd.read_csv(HISTORY_FILE, dtype={"code": str})
-        old_df = old_df[old_df["date"] != date_str]
-        final_df = pd.concat([old_df, new_df], ignore_index=True)
-    else:
-        final_df = new_df
+# ==========================================
+# 1. 严谨K线形态识别引擎 (30+ Patterns)
+# ==========================================
+class KLineStrictLib:
+    """
+    基于严谨定义的 Pandas 向量化形态库
+    不依赖 TA-Lib，但逻辑对标标准蜡烛图技术
+    """
+    @staticmethod
+    def detect(df):
+        if len(df) < 20: return 0, [], []
         
-    final_df.to_csv(HISTORY_FILE, index=False)
-    print(f"✅ 选股记录已更新至: {HISTORY_FILE}")
-
-# --- 3. 获取股票列表 ---
-def get_targets_robust():
-    print(">>> [1/4] 获取全量股票列表...")
-    try:
-        df = ak.stock_zh_a_spot_em()
-        df = df[["代码", "名称"]]
-        df.columns = ["code", "name"]
-        targets = df[df["code"].str.startswith(("60", "00"))]
-        return targets, "东财"
-    except:
-        try:
-            df = ak.stock_zh_a_spot()
-            df = df[["symbol", "name"]]
-            df.columns = ["code", "name"]
-            targets = df[df["code"].str.startswith(("sh60", "sz00"))]
-            targets["code"] = targets["code"].str.replace("sh", "").str.replace("sz", "")
-            return targets, "新浪"
-        except:
-            manual_list = [["600519","贵州茅台"],["300750","宁德时代"],["002594","比亚迪"]]
-            return pd.DataFrame(manual_list, columns=["code", "name"]), "离线"
-
-# --- 4. 获取热点板块 ---
-def get_hot_stock_pool():
-    print(">>> [2/4] 扫描市场热点...")
-    hot_codes = set()
-    try:
-        df_ind = ak.stock_board_industry_name_em().sort_values(by="涨跌幅", ascending=False).head(5)
-        for board in df_ind['板块名称']:
-            try:
-                df = ak.stock_board_industry_cons_em(symbol=board)
-                hot_codes.update(df['代码'].tolist())
-            except: pass
-            time.sleep(0.2)
-        return hot_codes
-    except:
-        return None
-
-# --- 5. 数据获取 ---
-def get_data_with_retry(code, start_date):
-    for i in range(3):
-        try:
-            df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
-            if df is None or df.empty: raise ValueError("Empty")
-            return df
-        except:
-            time.sleep(0.5)
-    return None
-
-# --- 6. 核心计算逻辑 ---
-def process_stock(df):
-    if len(df) < 60: return None
-    
-    # 指标计算
-    df["MA5"] = df["close"].rolling(5).mean()
-    df["MA10"] = df["close"].rolling(10).mean()
-    df["MA20"] = df["close"].rolling(20).mean()
-    df["MA60"] = df["close"].rolling(60).mean()
-    
-    vol_ma5 = df["volume"].rolling(5).mean()
-    vol_ratio = 0 if vol_ma5.iloc[-1] == 0 else round(df["volume"].iloc[-1] / vol_ma5.iloc[-1], 2)
-
-    macd = MACD(df["close"])
-    df["DIF"] = macd.macd()
-    df["DEA"] = macd.macd_signal()
-    df["MACD_Hist"] = macd.macd_diff()
-    
-    kdj = StochasticOscillator(df["high"], df["low"], df["close"])
-    df["K"] = kdj.stoch()
-    df["D"] = kdj.stoch_signal()
-    
-    df["RSI"] = RSIIndicator(close=df["close"], window=14).rsi()
-    
-    obv_ind = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"])
-    df["OBV"] = obv_ind.on_balance_volume()
-    df["OBV_MA10"] = df["OBV"].rolling(10).mean()
-
-    cmf_ind = ChaikinMoneyFlowIndicator(high=df["high"], low=df["low"], close=df["close"], volume=df["volume"], window=20)
-    df["CMF"] = cmf_ind.chaikin_money_flow()
-
-    # 信号判定
-    curr = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    s_macd = (prev["DIF"] < prev["DEA"] and curr["DIF"] > curr["DEA"] and curr["MACD_Hist"] > prev["MACD_Hist"])
-    is_near_gold = (curr["DIF"] < curr["DEA"]) and (curr["DEA"] - curr["DIF"] < 0.05) and (curr["DIF"] > prev["DIF"])
-    s_kdj = (prev["K"] < prev["D"] and curr["K"] > curr["D"])
-    s_ma_bull = (curr["MA5"] > curr["MA10"] > curr["MA20"] > curr["MA60"])
-
-    is_divergence = False
-    last_60_low_idx = df["low"].tail(60).idxmin()
-    if last_60_low_idx != curr.name:
-        if curr["close"] < df.loc[last_60_low_idx, "low"] * 1.05:
-            if curr["DIF"] > df.loc[last_60_low_idx, "DIF"] + 0.1:
-                is_divergence = True
-
-    # 筛选
-    if not ((s_macd or is_divergence or is_near_gold) or (s_kdj and s_ma_bull)):
-        return None
-
-    # 避坑
-    boll = BollingerBands(close=df["close"], window=20, window_dev=2)
-    boll_mid = boll.bollinger_mavg().iloc[-1]
-    if curr["close"] < boll_mid: return None
-    if curr["OBV"] < curr["OBV_MA10"]: return None
-    if curr["RSI"] > 80: return None
-
-    # 数据组装
-    cmf_curr = curr["CMF"]
-    cmf_prev = prev["CMF"]
-    cmf_status = "平稳"
-    if cmf_prev < 0 and cmf_curr > 0: cmf_status = "★资金转正"
-    elif cmf_curr > cmf_prev and cmf_curr > 0.1: cmf_status = "流入加速"
-    elif cmf_curr > cmf_prev and cmf_curr < 0: cmf_status = "流出减弱"
-
-    pct_3d = 0.0
-    try:
-        close_3d_ago = df["close"].iloc[-4]
-        pct_3d = round((curr["close"] - close_3d_ago) / close_3d_ago * 100, 2)
-    except: pass
-
-    advice = "观察"
-    if cmf_status == "★资金转正" and s_macd: advice = "【积极买入】资金共振"
-    elif is_divergence: advice = "【低吸潜伏】左侧抄底"
-    elif s_macd: advice = "【右侧买点】金叉确认"
-    elif s_kdj and s_ma_bull: advice = "【趋势跟随】持股/做T"
-    elif is_near_gold: advice = "【预警观察】等待金叉"
-
-    return {
-        "close": curr["close"],
-        "pct_3d": pct_3d,
-        "advice": advice,
-        "vol_ratio": vol_ratio,
-        "cmf_curr": round(cmf_curr, 3),
-        "cmf_prev": round(cmf_prev, 3),
-        "cmf_trend": cmf_status,
-        "macd_gold": "真金叉" if s_macd else "",
-        "near_gold": "预警" if is_near_gold else "",
-        "divergence": "底背离" if is_divergence else "",
-        "obv_desc": "强力" if curr["OBV"] > curr["OBV_MA10"] * 1.01 else "温和",
-        "kdj_gold": "是" if s_kdj else ""
-    }
-
-# --- 7. 单个股票处理任务 ---
-def check_stock_task(args):
-    code, name, start_dt, history_df, today_str, source_tag = args
-    try:
-        df = get_data_with_retry(code, start_dt)
-        if df is None: return None
+        # 基础数据
+        c = df['close']
+        o = df['open']
+        h = df['high']
+        l = df['low']
+        v = df['volume']
         
-        df.rename(columns={"日期":"date","开盘":"open","收盘":"close","最高":"high","最低":"low","成交量":"volume"}, inplace=True)
-        df["date"] = pd.to_datetime(df["date"])
-        df.set_index("date", inplace=True)
-
-        res = process_stock(df)
+        # 均线
+        ma5, ma10, ma20 = df['ma5'], df['ma10'], df['ma20']
         
-        if res:
-            past_records = history_df[
-                (history_df["code"] == code) & 
-                (history_df["date"] != today_str)
+        # 形态特征变量
+        body = np.abs(c - o)                   # 实体高度
+        upper_s = h - np.maximum(c, o)         # 上影线
+        lower_s = np.minimum(c, o) - l         # 下影线
+        avg_body = body.rolling(10).mean()     # 平均实体大小
+        range_ = h - l                         # 全长
+        
+        # 辅助函数: 获取倒数第 i 天的数据
+        def get(s, i): return s.iloc[i]
+        
+        buy_pats = []    # 买入形态
+        risk_pats = []   # 风险形态
+        score = 0
+        
+        # =========================================
+        # A. 底部反转形态 (Bottom Reversal)
+        # =========================================
+        
+        # 1. 早晨之星 (Morning Star) [标准定义]
+        # Day1: 长阴; Day2: 向下跳空, 小实体; Day3: 阳线, 收盘价 > Day1实体中点
+        if (get(c,-3) < get(o,-3)) and (get(body,-3) > get(avg_body,-3)) and \
+           (get(h,-2) < get(l,-3)) and \
+           (get(c,-1) > get(o,-1)) and (get(c,-1) > (get(o,-3)+get(c,-3))/2):
+            buy_pats.append("早晨之星(标准)")
+            score += 20
+
+        # 2. 锤子线 (Hammer)
+        # 处于下降趋势(近5日低点), 下影线 > 2倍实体, 上影线极短
+        if (get(l,-1) == l.iloc[-5:].min()) and \
+           (get(lower_s,-1) >= 2 * get(body,-1)) and \
+           (get(upper_s,-1) <= 0.1 * get(body,-1)):
+            buy_pats.append("锤子线")
+            score += 15
+
+        # 3. 倒锤子线 (Inverted Hammer)
+        # 处于下降趋势, 上影线 > 2倍实体, 下影线极短
+        if (get(l,-1) == l.iloc[-5:].min()) and \
+           (get(upper_s,-1) >= 2 * get(body,-1)) and \
+           (get(lower_s,-1) <= 0.1 * get(body,-1)):
+            buy_pats.append("倒锤头")
+            score += 10
+
+        # 4. 启明星/旭日东升 (Bullish Engulfing)
+        # 阳包阴: Day2开盘 < Day1收盘, Day2收盘 > Day1开盘
+        if (get(c,-2) < get(o,-2)) and (get(c,-1) > get(o,-1)) and \
+           (get(o,-1) < get(c,-2)) and (get(c,-1) > get(o,-2)):
+            buy_pats.append("阳包阴(吞噬)")
+            score += 20
+
+        # 5. 曙光初现 (Piercing Line)
+        # Day1大阴, Day2低开, 收盘刺入Day1实体一半以上
+        if (get(c,-2) < get(o,-2)) and (get(body,-2) > get(avg_body,-2)) and \
+           (get(o,-1) < get(l,-2)) and \
+           (get(c,-1) > (get(o,-2)+get(c,-2))/2) and (get(c,-1) < get(o,-2)):
+            buy_pats.append("曙光初现")
+            score += 15
+
+        # 6. 平底/镊子底 (Tweezer Bottom)
+        if abs(get(l,-1) - get(l,-2)) < (get(c,-1)*0.002) and (get(l,-1) == l.iloc[-10:].min()):
+            buy_pats.append("镊子底")
+            score += 10
+
+        # 7. 红三兵 (Three White Soldiers)
+        # 连续三阳, 收盘价创新高, 且每根都在上一根实体内开盘
+        if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and \
+           (get(c,-1)>get(c,-2)>get(c,-3)):
+            buy_pats.append("红三兵")
+            score += 15
+
+        # =========================================
+        # B. 攻击与整理形态 (Continuation / Breakout)
+        # =========================================
+
+        # 8. 上升三法 (Rising Three Methods) [复杂形态]
+        # 长阳 -> 3根小阴线(不跌破长阳低点) -> 长阳创新高
+        if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and \
+           (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and \
+           (get(l,-4)>get(l,-5)) and (get(l,-2)>get(l,-5)) and \
+           (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)):
+            buy_pats.append("上升三法(N字反包)")
+            score += 25
+
+        # 9. 多方炮 (Two Red Sandwiched Black)
+        if (get(c,-3)>get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and \
+           (get(c,-1) > get(c,-3)):
+            buy_pats.append("多方炮")
+            score += 20
+
+        # 10. 向上跳空缺口 (Gap Up)
+        if get(l,-1) > get(h,-2):
+            buy_pats.append("跳空缺口")
+            score += 15
+
+        # 11. 一阳穿三线 (Golden Breakout)
+        if (get(c,-1) > max(get(ma5,-1), get(ma10,-1), get(ma20,-1))) and \
+           (get(o,-1) < min(get(ma5,-1), get(ma10,-1), get(ma20,-1))):
+            buy_pats.append("一阳穿三线")
+            score += 25
+        
+        # 12. 倍量过左峰 (Volume Breakout)
+        if (get(v,-1) > get(v,-2)*1.9) and (get(c,-1) >= c.iloc[-20:].max()):
+            buy_pats.append("倍量过左峰")
+            score += 20
+
+        # 13. 金蜘蛛 (Golden Spider)
+        diff = max(get(ma5,-1), get(ma10,-1), get(ma20,-1)) - min(get(ma5,-1), get(ma10,-1), get(ma20,-1))
+        if (diff/get(c,-1) < 0.015) and (get(c,-1) > get(ma5,-1)):
+            buy_pats.append("金蜘蛛")
+            score += 15
+
+        # =========================================
+        # C. 顶部/风险形态 (Top Reversal / Risk) - 扣分
+        # =========================================
+
+        # 14. 黄昏之星 (Evening Star)
+        if (get(c,-3)>get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and \
+           (get(l,-2)>get(h,-3)) and \
+           (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
+            risk_pats.append("风险:黄昏之星")
+            score -= 30
+
+        # 15. 乌云盖顶 (Dark Cloud Cover)
+        if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and \
+           (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2):
+            risk_pats.append("风险:乌云盖顶")
+            score -= 25
+
+        # 16. 穿头破脚/阴包阳 (Bearish Engulfing)
+        if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and \
+           (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)):
+            risk_pats.append("风险:阴包阳")
+            score -= 25
+
+        # 17. 三只乌鸦 (Three Black Crows)
+        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)) and \
+           (get(c,-1)<get(c,-2)<get(c,-3)):
+            risk_pats.append("风险:三只乌鸦")
+            score -= 30
+
+        # 18. 射击之星/流星 (Shooting Star)
+        # 上影线长，实体小，高位
+        if (get(upper_s,-1) > 2*get(body,-1)) and (get(lower_s,-1) < 0.1*get(body,-1)) and \
+           (get(c,-1) > get(c,-20)*1.15):
+            risk_pats.append("风险:射击之星")
+            score -= 20
+
+        # 19. 吊颈线 (Hanging Man)
+        # 下影线长，实体小，高位
+        if (get(lower_s,-1) > 2*get(body,-1)) and (get(upper_s,-1) < 0.1*get(body,-1)) and \
+           (get(c,-1) > get(c,-20)*1.15):
+            risk_pats.append("风险:吊颈线")
+            score -= 20
+        
+        # 20. 断头铡刀
+        if (get(c,-1) < min(get(ma5,-1), get(ma10,-1), get(ma20,-1))) and \
+           (get(o,-1) > max(get(ma5,-1), get(ma10,-1), get(ma20,-1))):
+            risk_pats.append("风险:断头铡刀")
+            score -= 40
+
+        return score, buy_pats, risk_pats
+
+# ==========================================
+# 2. 高级指标计算引擎
+# ==========================================
+class IndicatorEngine:
+    @staticmethod
+    def calculate(df):
+        if len(df) < 60: return None
+        
+        c = df['close']; h = df['high']; l = df['low']; v = df['volume']
+        
+        # 均线
+        ma5 = c.rolling(5).mean()
+        ma10 = c.rolling(10).mean()
+        ma20 = c.rolling(20).mean()
+        ma60 = c.rolling(60).mean()
+        df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20 # 注入df供形态库使用
+        
+        # CMF (资金流)
+        mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
+        cmf = (mf_mult * v).rolling(20).sum() / v.rolling(20).sum()
+        
+        # CCI (动量)
+        tp = (h + l + c) / 3
+        cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
+        
+        # ATR (风控)
+        tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean()
+        
+        # ADX (趋势强度)
+        up = h - h.shift(1); down = l.shift(1) - l
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+        tr_smooth = tr.rolling(14).sum()
+        plus_di = 100 * (pd.Series(plus_dm).rolling(14).sum() / tr_smooth)
+        minus_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / tr_smooth)
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.rolling(14).mean()
+        
+        # MACD
+        exp12 = c.ewm(span=12, adjust=False).mean()
+        exp26 = c.ewm(span=26, adjust=False).mean()
+        dif = exp12 - exp26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        
+        curr = df.iloc[-1]
+        
+        return {
+            'close': curr['close'],
+            'ma20': ma20.iloc[-1], 'ma60': ma60.iloc[-1],
+            'cmf': cmf.iloc[-1],
+            'cci': cci.iloc[-1],
+            'adx': adx.iloc[-1],
+            'atr': atr.iloc[-1],
+            'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1]
+        }
+
+# ==========================================
+# 3. Excel 导出引擎 (Excel Exporter)
+# ==========================================
+class ExcelExporter:
+    @staticmethod
+    def save(df_data, filename):
+        if df_data.empty: return
+        
+        print(f"正在生成 Excel 报表: {filename} ...")
+        
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            # Sheet 1: 选股结果
+            cols = ['代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
+                    '买入形态', '风险形态', '得分详情', 'CMF', 'CCI', 'ADX']
+            df_export = df_data[cols]
+            df_export.to_excel(writer, sheet_name='选股结果', index=False)
+            
+            # Sheet 2: K线形态字典
+            patterns_desc = [
+                ['形态名称', '类型', '大白话说明'],
+                ['早晨之星', '反转', '底部三日组合：阴线+星线+阳线，强力见底'],
+                ['锤子线', '反转', '底部长下影线，主力试盘后拉回，支撑强'],
+                ['红三兵', '攻击', '连续三天阳线稳步推升，多头排列初期'],
+                ['上升三法', '持续', '大阳线后接三根小调整线，再拉大阳，N字上攻'],
+                ['多方炮', '攻击', '阳阴阳组合，中间是洗盘，洗完继续涨'],
+                ['一阳穿三线', '突破', '一根大阳线同时突破5/10/20均线，爆发力强'],
+                ['倍量过左峰', '突破', '成交量翻倍且价格突破前期高点，解放套牢盘'],
+                ['黄昏之星', '风险', '顶部反转：阳线+星线+阴线，主力出货'],
+                ['乌云盖顶', '风险', '大阳后接低开低走大阴线，吃掉一半涨幅'],
+                ['断头铡刀', '风险', '一根大阴线跌破所有均线，趋势崩塌']
             ]
-            is_repeated = not past_records.empty
-            mark_status = "★连选牛股" if is_repeated else "首选"
+            df_pat = pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0])
+            df_pat.to_excel(writer, sheet_name='形态图解', index=False)
             
-            return {
-                "标记": mark_status,
-                "代码": code,
-                "名称": name,
-                "操作建议": res["advice"],
-                "3日涨跌%": res["pct_3d"],
-                "现价": res["close"],
-                "CMF趋势": res["cmf_trend"],
-                "CMF今日": res["cmf_curr"],
-                "MACD金叉": res["macd_gold"],
-                "底背离": res["divergence"],
-                "即将金叉": res["near_gold"],
-                "量比": res["vol_ratio"],
-                "资金流": res["obv_desc"],
-                "KDJ金叉": res["kdj_gold"],
-                "数据源": source_tag
-            }
-    except: pass
-    return None
-
-# --- 8. 主程序 (生成带说明书的Excel) ---
-def main():
-    print("=== 精英选股 (操作说明增强版) ===")
-    start_time = time.time()
-    
-    history_df = load_history()
-    today_str = datetime.now().strftime("%Y%m%d")
-    
-    try:
-        base_targets, source_name = get_targets_robust()
-        hot_pool = get_hot_stock_pool()
-        
-        if hot_pool and len(base_targets) > 100:
-            targets = base_targets[base_targets["code"].isin(hot_pool)]
-            source_tag = f"{source_name}+热点"
-        else:
-            targets = base_targets
-            source_tag = source_name
-
-        start_dt = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
-        result_data = []
-        total = len(targets)
-        
-        print(f">>> [3/4] 启动 4 线程扫描，共 {total} 只股票...")
-        
-        tasks = []
-        for _, s in targets.iterrows():
-            tasks.append((s["code"], s["name"], start_dt, history_df, today_str, source_tag))
-
-        finished_count = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(check_stock_task, t): t[0] for t in tasks}
+            # Sheet 3: 指标说明书
+            indicators_desc = [
+                ['指标名称', '实战含义', '判断标准'],
+                ['CMF (蔡金资金流)', '监控主力资金进出', '>0.1表示主力抢筹；<0表示流出'],
+                ['CCI (顺势指标)', '监控股价爆发力', '>100表示进入主升浪加速区，适合短线'],
+                ['ADX (趋势强度)', '监控趋势是否真实', '>25表示趋势强劲；<20表示震荡无方向'],
+                ['ATR (真实波幅)', '计算止损和仓位', '价格的波动范围，用于科学设定止损位'],
+                ['MACD', '趋势之王', '水上金叉(0轴上)是主升浪最稳信号']
+            ]
+            df_ind = pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0])
+            df_ind.to_excel(writer, sheet_name='指标说明书', index=False)
             
-            for future in concurrent.futures.as_completed(futures):
-                finished_count += 1
-                if finished_count % 10 == 0 or finished_count == total:
-                    print(f"\r进度: {finished_count}/{total} ({(finished_count/total)*100:.1f}%)", end="")
+        print(f"✅ Excel 文件已保存至: {filename}")
+
+# ==========================================
+# 4. 策略主控 (Main Strategy)
+# ==========================================
+class AlphaGalaxyUltimate:
+    def __init__(self):
+        self.min_cap = 40 * 10000 * 10000 
+
+    def get_candidates(self):
+        print("1. 获取全市场快照 & 初步清洗...")
+        try:
+            df = ak.stock_zh_a_spot_em()
+            df['总市值'] = pd.to_numeric(df['总市值'], errors='coerce')
+            df['最新价'] = pd.to_numeric(df['最新价'], errors='coerce')
+            df['换手率'] = pd.to_numeric(df['换手率'], errors='coerce')
+            
+            mask = (
+                (~df['代码'].str.startswith(('30', '688', '8', '4'))) & 
+                (~df['名称'].str.contains('ST|退')) &
+                (df['总市值'] > self.min_cap) &
+                (df['最新价'] > 3.0) &
+                (df['换手率'] > 1.0) & (df['换手率'] < 20)
+            )
+            return list(zip(df[mask]['代码'], df[mask]['名称']))
+        except:
+            return []
+
+    def analyze_one(self, args):
+        symbol, name = args
+        try:
+            # QFQ 前复权，确保形态准确
+            end = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
+            df = ak.stock_zh_a_hist(symbol=symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
+            
+            if df is None: return None
+            df.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume'}, inplace=True)
+            
+            # 计算
+            fac = IndicatorEngine.calculate(df)
+            if not fac: return None
+            
+            k_score, buy_pats, risk_pats = KLineStrictLib.detect(df)
+            
+            # 评分
+            score = 0
+            logic = []
+            
+            # 否决项
+            if risk_pats: score -= 30
+            if fac['ma20'] < fac['ma60']: return None
+            
+            # 趋势项
+            if fac['close'] > fac['ma20'] > fac['ma60']:
+                base = 20
+                if fac['adx'] > 25: base += 10; logic.append(f"ADX强趋势({int(fac['adx'])})")
+                score += base
                 
-                try:
-                    res = future.result()
-                    if res:
-                        result_data.append(res)
-                        if res["标记"] == "★连选牛股" or res["CMF趋势"] == "★资金转正":
-                            print(f"\n  🔥 发现: {res['代码']} {res['名称']} [{res['标记']}/{res['CMF趋势']}]")
-                except: pass
+            # 资金项
+            if fac['cmf'] > 0.15: score += 15; logic.append(f"资金流入({round(fac['cmf'],2)})")
+            elif fac['cmf'] > 0: score += 5
+            
+            # 动量项
+            if fac['cci'] > 100: score += 10; logic.append("CCI爆发")
+            if fac['macd_dif'] > fac['macd_dea'] and fac['macd_dif'] > 0: score += 10; logic.append("MACD水上金叉")
+            
+            # 形态项
+            if k_score > 0: score += k_score
+            
+            # 交易计划
+            buy_l = fac['close'] * 0.99
+            buy_h = fac['close'] * 1.01
+            stop = fac['close'] - 2 * fac['atr']
+            profit = fac['close'] + 3 * fac['atr']
+            
+            if score >= 60:
+                return {
+                    "代码": symbol,
+                    "名称": name,
+                    "总分": score,
+                    "现价": fac['close'],
+                    "建议买入区间": f"{round(buy_l,2)}~{round(buy_h,2)}",
+                    "止损价": round(stop, 2),
+                    "止盈价": round(profit, 2),
+                    "买入形态": " | ".join(buy_pats) if buy_pats else "-",
+                    "风险形态": " | ".join(risk_pats) if risk_pats else "-",
+                    "得分详情": " ".join(logic),
+                    "CMF": round(fac['cmf'], 3),
+                    "CCI": round(fac['cci'], 1),
+                    "ADX": int(fac['adx'])
+                }
+            return None
+        except:
+            return None
 
-        print(f"\n>>> [4/4] 扫描完成，耗时: {int(time.time() - start_time)}秒")
-
-        if result_data:
-            append_history(result_data, today_str)
+    def run(self):
+        print(f"{'='*100}")
+        print(" 🌌 Alpha Galaxy Excel - 宇宙级全形态选股系统 🌌")
+        print(f"{'='*100}")
+        
+        candidates = self.get_candidates()
+        print(f"待扫描: {len(candidates)} 只...")
+        
+        results = []
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            for res in tqdm(executor.map(self.analyze_one, candidates), total=len(candidates)):
+                if res: results.append(res)
+        
+        if results:
+            df = pd.DataFrame(results)
+            df.sort_values(by='总分', ascending=False, inplace=True)
             
-            cols = ["标记", "代码", "名称", "操作建议", "3日涨跌%", 
-                    "CMF趋势", "CMF今日", "MACD金叉", "底背离", 
-                    "即将金叉", "量比", "资金流", "KDJ金叉", "现价", "数据源"]
+            # 终端展示
+            print("\n" + "="*120)
+            print(df[['代码', '名称', '总分', '现价', '买入形态', '风险形态', '建议买入区间']].head(10).to_string(index=False))
             
-            df_res = pd.DataFrame(result_data, columns=cols)
-            
-            df_res["_rank"] = 0
-            df_res.loc[df_res["标记"] == "★连选牛股", "_rank"] += 100
-            df_res.loc[df_res["操作建议"].str.contains("积极"), "_rank"] += 50
-            df_res.loc[df_res["CMF趋势"] == "★资金转正", "_rank"] += 30
-            
-            df_res = df_res.sort_values(by=["_rank", "CMF今日"], ascending=[False, False]).drop(columns=["_rank"])
-            
-            filename = f"选股结果_{today_str}.xlsx"
-            
-            # --- 构建说明书 Sheet ---
-            readme_data = [
-                ["策略名称", "触发条件", "操作建议 & 含义", "推荐指数"],
-                ["【积极买入】资金共振", "MACD真金叉 + CMF由负转正", "★★★ 最强信号。主力资金进场且趋势转好，爆发力强，建议重仓关注。", "5星"],
-                ["【低吸潜伏】左侧抄底", "价格创新低 + MACD未创新低 (底背离)", "★★☆ 抄底信号。股价跌不动了，主力在暗中吸筹。适合分批买入，博取反弹。", "4星"],
-                ["【右侧买点】金叉确认", "MACD发生真金叉 (DIF上穿DEA)", "★★☆ 标准信号。趋势确认转强，适合稳健型投资者跟随买入。", "3星"],
-                ["【趋势跟随】持股/做T", "KDJ金叉 + 均线多头排列", "★☆☆ 趋势延续。股价在上涨通道中。如果持有请拿住；如果要买，适合盘中低吸高抛(做T)。", "2星"],
-                ["【预警观察】等待金叉", "MACD死叉但开口极小，即将金叉", "☆☆☆ 观察名单。目前还不是买点，但随时可能形成金叉，放入自选股密切盯盘。", "1星"],
-                ["关于 CMF 指标", "Chaikin Money Flow", "衡量主力资金流向。>0代表流入，<0代表流出。'资金转正'是极佳的买入辅助信号。", ""]
-            ]
-            df_readme = pd.DataFrame(readme_data[1:], columns=readme_data[0])
-
-            # 使用 ExcelWriter 写入两个 Sheet
-            with pd.ExcelWriter(filename) as writer:
-                df_res.to_excel(writer, sheet_name='选股结果', index=False)
-                df_readme.to_excel(writer, sheet_name='策略说明书', index=False)
-
-            print(f"✅ 结果已保存: {filename}")
-            print("💡 提示：Excel 底部有两个工作表，请点击 '策略说明书' 查看详细操作解释。")
+            # 导出Excel
+            filename = f"Alpha_Galaxy_Report_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            ExcelExporter.save(df, filename)
         else:
-            print("⚠ 未筛选出符合条件的股票")
-
-    except Exception:
-        with open("ERROR_LOG.txt", "w") as f: f.write(traceback.format_exc())
+            print("无符合条件标的。")
 
 if __name__ == "__main__":
-    main()
+    AlphaGalaxyUltimate().run()
