@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Max (Value Edition) - 宇宙级全形态量化系统
-Features: 25+种严谨K线形态 | 连续3日数据跟踪 | 得分详情含具体数值 | Excel导出
+Alpha Galaxy Fundamental - 机构全维量化系统 (基本面+技术面+形态)
+Features: 30+K线形态 | 基本面估值打分 | 交易计划 | Excel导出
 Author: Quant Studio
 """
 
@@ -18,12 +18,9 @@ import time
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. 严谨K线形态识别引擎 (全量版 - 保持不变)
+# 1. 严谨K线形态识别引擎 (保持全量不变)
 # ==========================================
 class KLineStrictLib:
-    """
-    基于严谨定义的 Pandas 向量化形态库
-    """
     @staticmethod
     def detect(df):
         if len(df) < 20: return 0, [], []
@@ -42,138 +39,86 @@ class KLineStrictLib:
         risk_pats = []
         score = 0
         
-        # ====================
-        # A. 底部反转 (Bottom Reversal)
-        # ====================
-        
-        # 1. 早晨之星 (标准)
+        # --- 底部反转 ---
         if (get(c,-3) < get(o,-3)) and (get(body,-3) > get(avg_body,-3)) and \
            (get(h,-2) < get(l,-3)) and \
            (get(c,-1) > get(o,-1)) and (get(c,-1) > (get(o,-3)+get(c,-3))/2):
             buy_pats.append("早晨之星")
             score += 20
-            
-        # 2. 锤子线
         if (get(l,-1) == l.iloc[-5:].min()) and (get(lower_s,-1) >= 2 * get(body,-1)) and (get(upper_s,-1) <= 0.1 * get(body,-1)):
             buy_pats.append("锤子线")
             score += 15
-            
-        # 3. 倒锤头
         if (get(l,-1) == l.iloc[-5:].min()) and (get(upper_s,-1) >= 2 * get(body,-1)) and (get(lower_s,-1) <= 0.1 * get(body,-1)):
             buy_pats.append("倒锤头")
             score += 10
-            
-        # 4. 阳包阴 (吞噬)
         if (get(c,-2) < get(o,-2)) and (get(c,-1) > get(o,-1)) and (get(o,-1) < get(c,-2)) and (get(c,-1) > get(o,-2)):
             buy_pats.append("阳包阴")
             score += 20
-            
-        # 5. 曙光初现
         if (get(c,-2) < get(o,-2)) and (get(body,-2) > get(avg_body,-2)) and \
            (get(o,-1) < get(l,-2)) and (get(c,-1) > (get(o,-2)+get(c,-2))/2) and (get(c,-1) < get(o,-2)):
             buy_pats.append("曙光初现")
             score += 15
-            
-        # 6. 镊子底
         if abs(get(l,-1) - get(l,-2)) < (get(c,-1)*0.002) and (get(l,-1) == l.iloc[-10:].min()):
             buy_pats.append("镊子底")
             score += 10
-            
-        # 7. 身怀六甲 (孕线)
         if (get(c,-2) < get(o,-2)) and (get(body,-2) > get(avg_body,-2)) and \
            (get(c,-1) > get(o,-1)) and (get(h,-1) < get(h,-2)) and (get(l,-1) > get(l,-2)) and \
            (get(c,-1) < get(c,-20)): 
             buy_pats.append("身怀六甲")
             score += 10
 
-        # ====================
-        # B. 上升/攻击形态 (Attack)
-        # ====================
-        
-        # 8. 红三兵
+        # --- 攻击形态 ---
         if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
             buy_pats.append("红三兵")
             score += 15
-            
-        # 9. 上升三法 (N字反包)
         if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and \
            (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and \
            (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)):
             buy_pats.append("上升三法")
             score += 25
-            
-        # 10. 多方炮
         if (get(c,-3)>get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1) > get(c,-3)):
             buy_pats.append("多方炮")
             score += 20
-            
-        # 11. 向上跳空缺口
         if get(l,-1) > get(h,-2):
             buy_pats.append("跳空缺口")
             score += 15
-            
-        # 12. 一阳穿三线
         if (get(c,-1) > max(get(ma5,-1), get(ma10,-1), get(ma20,-1))) and (get(o,-1) < min(get(ma5,-1), get(ma10,-1), get(ma20,-1))):
             buy_pats.append("一阳穿三线")
             score += 25
-            
-        # 13. 倍量过左峰
         if (get(v,-1) > get(v,-2)*1.9) and (get(c,-1) >= c.iloc[-20:].max()):
             buy_pats.append("倍量过左峰")
             score += 20
-            
-        # 14. 金蜘蛛
         diff = max(get(ma5,-1), get(ma10,-1), get(ma20,-1)) - min(get(ma5,-1), get(ma10,-1), get(ma20,-1))
         if (diff/get(c,-1) < 0.015) and (get(c,-1) > get(ma5,-1)):
             buy_pats.append("金蜘蛛")
             score += 15
-
-        # 15. 仙人指路
         if (get(upper_s,-2) > get(body,-2)) and (get(c,-1) > get(h,-2)) and (get(c,-1) > get(o,-1)):
             buy_pats.append("仙人指路")
             score += 15
 
-        # ====================
-        # C. 顶部/风险形态 (Risk)
-        # ====================
-        
-        # 16. 黄昏之星
+        # --- 风险形态 ---
         if (get(c,-3)>get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(l,-2)>get(h,-3)) and \
            (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
             risk_pats.append("风险:黄昏之星")
             score -= 30
-            
-        # 17. 乌云盖顶
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2):
             risk_pats.append("风险:乌云盖顶")
             score -= 25
-            
-        # 18. 阴包阳
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)):
             risk_pats.append("风险:阴包阳")
             score -= 25
-            
-        # 19. 三只乌鸦
         if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)) and (get(c,-1)<get(c,-2)<get(c,-3)):
             risk_pats.append("风险:三只乌鸦")
             score -= 30
-            
-        # 20. 射击之星
         if (get(upper_s,-1) > 2*get(body,-1)) and (get(lower_s,-1) < 0.1*get(body,-1)) and (get(c,-1) > get(c,-20)*1.15):
             risk_pats.append("风险:射击之星")
             score -= 20
-            
-        # 21. 吊颈线
         if (get(lower_s,-1) > 2*get(body,-1)) and (get(upper_s,-1) < 0.1*get(body,-1)) and (get(c,-1) > get(c,-20)*1.15):
             risk_pats.append("风险:吊颈线")
             score -= 20
-            
-        # 22. 断头铡刀
         if (get(c,-1) < min(get(ma5,-1), get(ma10,-1), get(ma20,-1))) and (get(o,-1) > max(get(ma5,-1), get(ma10,-1), get(ma20,-1))):
             risk_pats.append("风险:断头铡刀")
             score -= 40
-            
-        # 23. 向下跳空缺口
         if get(h,-1) < get(l,-2):
             risk_pats.append("风险:向下缺口")
             score -= 20
@@ -181,7 +126,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 2. 高级指标计算引擎 (保持不变)
+# 2. 高级指标计算引擎
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -190,6 +135,7 @@ class IndicatorEngine:
         
         c = df['close']; h = df['high']; l = df['low']; v = df['volume']
         
+        # 均线
         ma5 = c.rolling(5).mean()
         ma10 = c.rolling(10).mean()
         ma20 = c.rolling(20).mean()
@@ -255,7 +201,7 @@ class IndicatorEngine:
         }
 
 # ==========================================
-# 3. Excel 导出引擎 (保持不变)
+# 3. Excel 导出引擎 (保持完整)
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -265,11 +211,10 @@ class ExcelExporter:
         print(f"正在生成 Excel 报表: {filename} ...")
         
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-            # Sheet 1: 选股结果
             cols = [
                 '代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
                 '买入形态', '风险形态', '得分详情', 
-                '换手率%', '市盈率', 
+                '换手率%', '市盈率', '市净率',  # 增加市净率
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
                 'CMF(今)', 'CMF(昨)', 'CMF(前)', 
                 '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
@@ -277,7 +222,7 @@ class ExcelExporter:
             df_export = df_data[cols]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # Sheet 2: 形态图解
+            # 形态图解
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -304,12 +249,13 @@ class ExcelExporter:
                 ['风险:断头铡刀', '卖出-风险', '一阴断多线，趋势崩塌'],
                 ['风险:向下缺口', '卖出-风险', '向下跳空不回补，极弱势']
             ]
-            df_pat = pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0])
-            df_pat.to_excel(writer, sheet_name='形态图解', index=False)
+            pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0]).to_excel(writer, sheet_name='形态图解', index=False)
             
-            # Sheet 3: 指标说明书
+            # 指标说明
             indicators_desc = [
                 ['指标名称', '实战含义', '判断标准'],
+                ['市盈率(PE)', '估值', '0<PE<20为低估值(优)；PE<0为亏损(差)'],
+                ['市净率(PB)', '资产价格', 'PB>10可能高估'],
                 ['CMF (连续)', '监控主力资金', '连续3天为正且递增，说明主力持续拿货'],
                 ['J值 (KDJ)', '超买超卖', 'J<0为超卖(抄底)，J>100为超买(风险)'],
                 ['布林带宽', '变盘前兆', '数值越小(<0.10)说明筹码越集中，即将变盘'],
@@ -317,14 +263,14 @@ class ExcelExporter:
                 ['ADX', '趋势强度', '>25表示趋势强劲；<20表示震荡'],
                 ['RSI', '强弱指标', '50-80为强势区，>80过热'],
                 ['换手率', '活跃度', '3%-10%为健康活跃，>20%为妖股风险']
+                ['CCI', '爆发力', '>100表示加速']
             ]
-            df_ind = pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0])
-            df_ind.to_excel(writer, sheet_name='指标说明书', index=False)
+            pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
         print(f"✅ Excel 文件已保存至: {filename}")
 
 # ==========================================
-# 4. 策略主控 (逻辑更新：含数值详情)
+# 4. 策略主控 (新增: 基本面评分引擎)
 # ==========================================
 class AlphaGalaxyUltimate:
     def __init__(self):
@@ -334,10 +280,9 @@ class AlphaGalaxyUltimate:
         print("1. 获取全市场快照 & 初步清洗...")
         try:
             df = ak.stock_zh_a_spot_em()
-            df['总市值'] = pd.to_numeric(df['总市值'], errors='coerce')
-            df['最新价'] = pd.to_numeric(df['最新价'], errors='coerce')
-            df['换手率'] = pd.to_numeric(df['换手率'], errors='coerce')
-            df['市盈率-动态'] = pd.to_numeric(df['市盈率-动态'], errors='coerce')
+            # 类型转换
+            for col in ['总市值', '最新价', '换手率', '市盈率-动态', '市净率']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
             
             mask = (
                 (~df['代码'].str.startswith(('30', '688', '8', '4'))) & 
@@ -346,13 +291,17 @@ class AlphaGalaxyUltimate:
                 (df['最新价'] > 3.0) &
                 (df['换手率'] > 1.0) & (df['换手率'] < 20)
             )
-            return list(zip(df[mask]['代码'], df[mask]['名称'], df[mask]['市盈率-动态'], df[mask]['换手率']))
+            # 透传更多字段: PE, PB, Turnover
+            return list(zip(df[mask]['代码'], df[mask]['名称'], df[mask]['市盈率-动态'], df[mask]['市净率'], df[mask]['换手率']))
         except:
             return []
 
     def analyze_one(self, args):
-        symbol, name, pe, turnover = args
+        symbol, name, pe, pb, turnover = args
         try:
+            # 0. 基本面一票否决
+            if pe < 0: return None # 亏损股剔除
+            
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
             df = ak.stock_zh_a_hist(symbol=symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
@@ -360,6 +309,7 @@ class AlphaGalaxyUltimate:
             if df is None: return None
             df.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume'}, inplace=True)
             
+            # 计算
             fac = IndicatorEngine.calculate(df)
             if not fac: return None
             
@@ -368,62 +318,90 @@ class AlphaGalaxyUltimate:
             score = 0
             logic = []
             
-            # 否决项
+            # ==============================
+            # A. 否决项 (Veto)
+            # ==============================
             if risk_pats: score -= 30
-            if fac['ma20'] < fac['ma60']: return None
+            if fac['ma20'] < fac['ma60']: return None # 趋势空头
             
-            # --- 评分逻辑 (含数值) ---
-            
-            # 1. 趋势
+            # ==============================
+            # B. 基本面打分 (Fundamental) [NEW]
+            # ==============================
+            # PE评分
+            if 0 < pe <= 20: 
+                score += 20
+                logic.append(f"低估值(PE:{pe})")
+            elif 20 < pe <= 50:
+                score += 15
+                logic.append(f"成长(PE:{pe})")
+            elif pe > 80:
+                score -= 10
+                logic.append(f"高估值(PE:{pe})")
+                
+            # PB评分
+            if pb > 10:
+                score -= 5
+                
+            # ==============================
+            # C. 技术面打分 (Technical)
+            # ==============================
+            # 趋势
             if fac['close'] > fac['ma20'] > fac['ma60']:
                 base = 20
                 if fac['adx'] > 25: 
                     base += 10
-                    logic.append(f"ADX强趋势({int(fac['adx'])})") # 增加数值
+                    logic.append(f"ADX强趋势({int(fac['adx'])})")
                 else:
-                    logic.append("均线多头")
+                    logic.append("多头排列")
                 score += base
             
-            # 2. 资金
+            # 资金
             if fac['cmf_0'] > 0.1: 
                 score += 15
-                logic.append(f"资金抢筹({round(fac['cmf_0'],2)})") # 增加数值
+                logic.append(f"资金抢筹({round(fac['cmf_0'],2)})")
             elif fac['cmf_0'] > 0: 
                 score += 5
                 logic.append(f"资金流入({round(fac['cmf_0'],2)})")
             
-            # 3. 动量
+            # 动量
             if fac['cci'] > 100: 
                 score += 10
-                logic.append(f"CCI爆发({int(fac['cci'])})") # 增加数值
+                logic.append(f"CCI爆发({int(fac['cci'])})")
                 
             if fac['macd_dif'] > fac['macd_dea'] and fac['macd_dif'] > 0: 
                 score += 10
                 logic.append("MACD水上金叉")
                 
-            # 4. 形态
+            # 形态
             if k_score > 0: score += k_score
             
-            # 交易计划
+            # ==============================
+            # D. 输出构建
+            # ==============================
             buy_l = fac['close'] * 0.99
             buy_h = fac['close'] * 1.01
             stop = fac['close'] - 2 * fac['atr']
             profit = fac['close'] + 3 * fac['atr']
             
-            if score >= 60:
+            if score >= 65: # 提高一点门槛，因为加了基本面分
                 return {
                     "代码": symbol,
                     "名称": name,
                     "总分": score,
                     "现价": fac['close'],
+                    # 基本面数据
                     "市盈率": round(pe, 2),
+                    "市净率": round(pb, 2),
                     "换手率%": round(turnover, 2),
+                    
                     "建议买入区间": f"{round(buy_l,2)}~{round(buy_h,2)}",
                     "止损价": round(stop, 2),
                     "止盈价": round(profit, 2),
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
                     "风险形态": " | ".join(risk_pats) if risk_pats else "-",
-                    "得分详情": " ".join(logic), # 现在这里包含了数值
+                    "得分详情": " ".join(logic), # 包含基本面+技术面详情
+                    
+                    # 技术指标详情
                     "J值": round(fac['j_val'], 1),
                     "布林带宽": round(fac['bb_width'], 3),
                     "RSI": round(fac['rsi'], 1),
@@ -443,7 +421,7 @@ class AlphaGalaxyUltimate:
 
     def run(self):
         print(f"{'='*100}")
-        print(" 🌌 Alpha Galaxy Max - 宇宙级全形态全数据量化系统 🌌")
+        print(" 🌌 Alpha Galaxy Fundamental - 机构全维系统 (含基本面评分) 🌌")
         print(f"{'='*100}")
         
         candidates = self.get_candidates()
@@ -459,9 +437,9 @@ class AlphaGalaxyUltimate:
             df.sort_values(by='总分', ascending=False, inplace=True)
             
             print("\n" + "="*120)
-            print(df[['代码', '名称', '总分', '现价', 'CMF(今)', '买入形态', '得分详情']].head(10).to_string(index=False))
+            print(df[['代码', '名称', '总分', '现价', '市盈率', '得分详情']].head(10).to_string(index=False))
             
-            filename = f"Alpha_Galaxy_Max_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            filename = f"Alpha_Galaxy_Fund_{datetime.now().strftime('%Y%m%d')}.xlsx"
             ExcelExporter.save(df, filename)
         else:
             print("无符合条件标的。")
