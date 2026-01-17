@@ -1,0 +1,10 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地生成的报表 (不需要上传到代码库，Actions 运行后会提供下载链接)
+*.csv
+*.xlsx
+
+# 系统文件
+.DS_Store
