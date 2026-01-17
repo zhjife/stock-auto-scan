@@ -31,7 +31,7 @@ jobs:
 
     # 4. 运行脚本
     - name: Run Alpha Galaxy Strategy
-      run: main.py
+      run: python main.py
 
     # 5. 上传结果 (升级到 v4，修复报错)
     - name: Upload Excel Report
