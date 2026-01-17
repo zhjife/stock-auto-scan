@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Max - 宇宙级全形态量化系统 (全形态+全数据版)
-Features: 25+种严谨K线形态 | 连续3日数据跟踪 | J值/BIAS/布林带宽 | Excel导出
+Alpha Galaxy Max (Value Edition) - 宇宙级全形态量化系统
+Features: 25+种严谨K线形态 | 连续3日数据跟踪 | 得分详情含具体数值 | Excel导出
 Author: Quant Studio
 """
 
@@ -18,7 +18,7 @@ import time
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. 严谨K线形态识别引擎 (全量版)
+# 1. 严谨K线形态识别引擎 (全量版 - 保持不变)
 # ==========================================
 class KLineStrictLib:
     """
@@ -79,10 +79,10 @@ class KLineStrictLib:
             buy_pats.append("镊子底")
             score += 10
             
-        # 7. 身怀六甲 (孕线) - 底部变盘
+        # 7. 身怀六甲 (孕线)
         if (get(c,-2) < get(o,-2)) and (get(body,-2) > get(avg_body,-2)) and \
            (get(c,-1) > get(o,-1)) and (get(h,-1) < get(h,-2)) and (get(l,-1) > get(l,-2)) and \
-           (get(c,-1) < get(c,-20)): # 低位
+           (get(c,-1) < get(c,-20)): 
             buy_pats.append("身怀六甲")
             score += 10
 
@@ -128,7 +128,7 @@ class KLineStrictLib:
             buy_pats.append("金蜘蛛")
             score += 15
 
-        # 15. 仙人指路 (回补上影线)
+        # 15. 仙人指路
         if (get(upper_s,-2) > get(body,-2)) and (get(c,-1) > get(h,-2)) and (get(c,-1) > get(o,-1)):
             buy_pats.append("仙人指路")
             score += 15
@@ -148,7 +148,7 @@ class KLineStrictLib:
             risk_pats.append("风险:乌云盖顶")
             score -= 25
             
-        # 18. 阴包阳 (穿头破脚)
+        # 18. 阴包阳
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)):
             risk_pats.append("风险:阴包阳")
             score -= 25
@@ -173,7 +173,7 @@ class KLineStrictLib:
             risk_pats.append("风险:断头铡刀")
             score -= 40
             
-        # 23. 向下跳空缺口 (风险)
+        # 23. 向下跳空缺口
         if get(h,-1) < get(l,-2):
             risk_pats.append("风险:向下缺口")
             score -= 20
@@ -181,7 +181,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 2. 高级指标计算引擎
+# 2. 高级指标计算引擎 (保持不变)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -190,21 +190,17 @@ class IndicatorEngine:
         
         c = df['close']; h = df['high']; l = df['low']; v = df['volume']
         
-        # 0. 基础均线
         ma5 = c.rolling(5).mean()
         ma10 = c.rolling(10).mean()
         ma20 = c.rolling(20).mean()
         ma60 = c.rolling(60).mean()
         df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20
         
-        # 1. 连续涨跌幅 (Pct Change)
         pct_change = c.pct_change() * 100
         
-        # 2. CMF (资金流)
         mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
         cmf_series = (mf_mult * v).rolling(20).sum() / v.rolling(20).sum()
         
-        # 3. KDJ (J值)
         low_min = l.rolling(9).min()
         high_max = h.rolling(9).max()
         rsv = (c - low_min) / (high_max - low_min) * 100
@@ -212,14 +208,11 @@ class IndicatorEngine:
         D = K.ewm(com=2, adjust=False).mean()
         J = 3 * K - 2 * D
         
-        # 4. 布林带宽 (Bollinger Bandwidth)
         std20 = c.rolling(20).std()
         bb_width = (4 * std20) / ma20
         
-        # 5. BIAS (乖离率)
         bias = (c - ma20) / ma20 * 100
         
-        # 6. 常规指标
         tp = (h + l + c) / 3
         cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
         
@@ -257,13 +250,12 @@ class IndicatorEngine:
             'j_val': J.iloc[-1],
             'bias': bias.iloc[-1],
             'bb_width': bb_width.iloc[-1],
-            # 连续数据
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
             'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3]
         }
 
 # ==========================================
-# 3. Excel 导出引擎 (更新列)
+# 3. Excel 导出引擎 (保持不变)
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -285,7 +277,7 @@ class ExcelExporter:
             df_export = df_data[cols]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # Sheet 2: 形态图解 (更新全量)
+            # Sheet 2: 形态图解
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -332,7 +324,7 @@ class ExcelExporter:
         print(f"✅ Excel 文件已保存至: {filename}")
 
 # ==========================================
-# 4. 策略主控 (逻辑整合)
+# 4. 策略主控 (逻辑更新：含数值详情)
 # ==========================================
 class AlphaGalaxyUltimate:
     def __init__(self):
@@ -376,21 +368,43 @@ class AlphaGalaxyUltimate:
             score = 0
             logic = []
             
+            # 否决项
             if risk_pats: score -= 30
             if fac['ma20'] < fac['ma60']: return None
             
+            # --- 评分逻辑 (含数值) ---
+            
+            # 1. 趋势
             if fac['close'] > fac['ma20'] > fac['ma60']:
                 base = 20
-                if fac['adx'] > 25: base += 10; logic.append(f"ADX强趋势")
+                if fac['adx'] > 25: 
+                    base += 10
+                    logic.append(f"ADX强趋势({int(fac['adx'])})") # 增加数值
+                else:
+                    logic.append("均线多头")
                 score += base
             
-            if fac['cmf_0'] > 0.1: score += 15; logic.append(f"资金流入")
-            elif fac['cmf_0'] > 0: score += 5
+            # 2. 资金
+            if fac['cmf_0'] > 0.1: 
+                score += 15
+                logic.append(f"资金抢筹({round(fac['cmf_0'],2)})") # 增加数值
+            elif fac['cmf_0'] > 0: 
+                score += 5
+                logic.append(f"资金流入({round(fac['cmf_0'],2)})")
             
-            if fac['cci'] > 100: score += 10; logic.append("CCI爆发")
-            if fac['macd_dif'] > fac['macd_dea'] and fac['macd_dif'] > 0: score += 10
+            # 3. 动量
+            if fac['cci'] > 100: 
+                score += 10
+                logic.append(f"CCI爆发({int(fac['cci'])})") # 增加数值
+                
+            if fac['macd_dif'] > fac['macd_dea'] and fac['macd_dif'] > 0: 
+                score += 10
+                logic.append("MACD水上金叉")
+                
+            # 4. 形态
             if k_score > 0: score += k_score
             
+            # 交易计划
             buy_l = fac['close'] * 0.99
             buy_h = fac['close'] * 1.01
             stop = fac['close'] - 2 * fac['atr']
@@ -409,7 +423,7 @@ class AlphaGalaxyUltimate:
                     "止盈价": round(profit, 2),
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
                     "风险形态": " | ".join(risk_pats) if risk_pats else "-",
-                    "得分详情": " ".join(logic),
+                    "得分详情": " ".join(logic), # 现在这里包含了数值
                     "J值": round(fac['j_val'], 1),
                     "布林带宽": round(fac['bb_width'], 3),
                     "RSI": round(fac['rsi'], 1),
@@ -429,7 +443,7 @@ class AlphaGalaxyUltimate:
 
     def run(self):
         print(f"{'='*100}")
-        print(" 🌌 Alpha Galaxy Max - 全维全形态终极版 🌌")
+        print(" 🌌 Alpha Galaxy Max - 宇宙级全形态全数据量化系统 🌌")
         print(f"{'='*100}")
         
         candidates = self.get_candidates()
@@ -445,7 +459,7 @@ class AlphaGalaxyUltimate:
             df.sort_values(by='总分', ascending=False, inplace=True)
             
             print("\n" + "="*120)
-            print(df[['代码', '名称', '总分', '现价', 'CMF(今)', '买入形态', '风险形态']].head(10).to_string(index=False))
+            print(df[['代码', '名称', '总分', '现价', 'CMF(今)', '买入形态', '得分详情']].head(10).to_string(index=False))
             
             filename = f"Alpha_Galaxy_Max_{datetime.now().strftime('%Y%m%d')}.xlsx"
             ExcelExporter.save(df, filename)
