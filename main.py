@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni Pro - 机构全维量化系统 (最终量价逻辑增强版)
+Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终融合版)
 Features: 
-1. 30+种严谨K线形态 (含风险预警)
-2. 量价动态分析 (缩量锁筹 vs 放量突破 vs 高位滞涨)
-3. 9大核心指标 (CMF/ADX/CCI/J值等)
+1. 30+种严谨K线形态 (补全了Pro版缺失的风险形态)
+2. 量价动态分析 (量比逻辑：缩量锁筹/放量突破)
+3. 9大核心指标 (新增量比 + PB/CMF分层优化)
 4. NLP 舆情风控
-5. Excel 完整字典导出
+5. Excel 完整字典导出 (融合了完全体的详细说明书)
 """
 
 import akshare as ak
@@ -68,6 +68,7 @@ class SentimentEngine:
 
 # ==========================================
 # 2. 严谨K线形态识别引擎 (30+种)
+# [UPDATED] 补全了 Pro 版遗漏的形态
 # ==========================================
 class KLineStrictLib:
     @staticmethod
@@ -84,8 +85,8 @@ class KLineStrictLib:
         buy_pats, risk_pats = [], []
         score = 0
         
-        # --- 底部反转 ---
-          if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2):
+        # --- 底部/反转 (买入) ---
+        if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2):
             buy_pats.append("早晨之星"); score += 20
         if (get(l,-1)==l.iloc[-5:].min()) and (get(lower_s,-1)>=2*get(body,-1)) and (get(upper_s,-1)<=0.1*get(body,-1)):
             buy_pats.append("锤子线"); score += 15
@@ -100,8 +101,8 @@ class KLineStrictLib:
         if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)>get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)) and (get(c,-1)<get(c,-20)):
             buy_pats.append("身怀六甲"); score += 10
 
-        # --- 攻击形态 ---
-       if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
+        # --- 攻击/突破 (买入) ---
+        if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
             buy_pats.append("红三兵"); score += 15
         if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)):
             buy_pats.append("上升三法"); score += 25
@@ -119,28 +120,31 @@ class KLineStrictLib:
         if (get(upper_s,-2)>get(body,-2)) and (get(c,-1)>get(h,-2)) and (get(c,-1)>get(o,-1)):
             buy_pats.append("仙人指路"); score += 15
 
-        # --- 风险形态 ---
-if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
+        # --- 风险形态 (卖出/否决) ---
+        # 1. 经典顶部
+        if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
             risk_pats.append("风险:黄昏之星"); score -= 30
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2):
             risk_pats.append("风险:乌云盖顶"); score -= 25
+        if (get(c,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
+            risk_pats.append("风险:断头铡刀"); score -= 40
+        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)):
+            risk_pats.append("风险:三只乌鸦"); score -= 30
+        if get(h,-1)<get(l,-2):
+            risk_pats.append("风险:向下缺口"); score -= 20
+            
+        # 2. [Added Back] 从完全体补回的风险形态
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)):
             risk_pats.append("风险:阴包阳"); score -= 25
-        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)) and (get(c,-1)<get(c,-2)<get(c,-3)):
-            risk_pats.append("风险:三只乌鸦"); score -= 30
         if (get(upper_s,-1)>2*get(body,-1)) and (get(lower_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15):
             risk_pats.append("风险:射击之星"); score -= 20
         if (get(lower_s,-1)>2*get(body,-1)) and (get(upper_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15):
             risk_pats.append("风险:吊颈线"); score -= 20
-        if (get(c,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
-            risk_pats.append("风险:断头铡刀"); score -= 40
-        if get(h,-1)<get(l,-2):
-            risk_pats.append("风险:向下缺口"); score -= 20
 
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎 (新增: 量比计算)
+# 3. 高级指标计算引擎 (保留 Pro 版的量比计算)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -152,7 +156,7 @@ class IndicatorEngine:
         ma5=c.rolling(5).mean(); ma10=c.rolling(10).mean(); ma20=c.rolling(20).mean(); ma60=c.rolling(60).mean()
         df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20
         
-        # [NEW] 量比计算 (今日量/5日均量)
+        # [NEW] 量比计算 (Pro版核心)
         vol_ma5 = v.rolling(5).mean()
         vol_ratio = v / vol_ma5.replace(0, 1)
         
@@ -193,11 +197,12 @@ class IndicatorEngine:
             'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 'bb_width': bb_width.iloc[-1],
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
             'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3],
-            'vol_ratio': vol_ratio.iloc[-1] # [NEW] 
+            'vol_ratio': vol_ratio.iloc[-1] 
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (新增量比列)
+# 4. Excel 导出引擎 
+# [UPDATED] 融合了完全体的详细字典说明
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -209,7 +214,7 @@ class ExcelExporter:
             cols = [
                 '代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
                 '买入形态', '风险形态', '舆情分析', '得分详情', 
-                '换手率%', '量比', '市盈率', '市净率',  # [NEW] 增加量比
+                '换手率%', '量比', '市盈率', '市净率', 
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
                 'CMF(今)', 'CMF(昨)', 'CMF(前)', 
                 '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
@@ -217,7 +222,7 @@ class ExcelExporter:
             df_export = df_data[cols]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # 形态图解
+            # 形态图解 (使用 Code B 的详细描述)
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -246,21 +251,20 @@ class ExcelExporter:
             ]
             pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0]).to_excel(writer, sheet_name='形态图解', index=False)
             
-            # 指标说明 (更新量比说明)
+            # 指标说明 (融合 Code A 的量比和 Code B 的详细说明)
             indicators_desc = [
                 ['指标名称', '实战含义', '判断标准'],
                 ['量比', '量能变化', '>1.5为放量；0.5-1.0为缩量(锁筹)'],
-                ['换手率', '活跃度', '3%-10%健康；>15%且滞涨则危险'],
-                ['CMF', '资金流', '连续3天为正且递增，说明主力持续拿货'],
-                ['J值 (KDJ)', '超买超卖', 'J<0为超卖(抄底)，J>100为超买(风险)'],
                 ['市盈率(PE)', '估值', '0<PE<20为低估值(优)；PE<0为亏损(差)'],
                 ['市净率(PB)', '资产价格', 'PB>10可能高估'],
+                ['CMF', '资金流', '连续3天为正且递增，说明主力持续拿货'],
+                ['J值 (KDJ)', '超买超卖', 'J<0为超卖(抄底)，J>100为超买(风险)'],
                 ['布林带宽', '变盘前兆', '数值越小(<0.10)说明筹码越集中，即将变盘'],
                 ['BIAS', '乖离率', '正值过大要回调，负值过大有反弹'],
                 ['ADX', '趋势强度', '>25表示趋势强劲；<20表示震荡'],
                 ['RSI', '强弱指标', '50-80为强势区，>80过热'],
+                ['换手率', '活跃度', '3%-10%健康；>15%且滞涨则危险'],
                 ['CCI', '爆发力', '>100表示加速']
-
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
@@ -268,6 +272,7 @@ class ExcelExporter:
 
 # ==========================================
 # 5. 策略主控 (漏斗式 + 量价逻辑优化)
+# [UPDATED] 融合了 Code B 的 PB 惩罚和 CMF 分层
 # ==========================================
 class AlphaGalaxyOmni:
     def __init__(self):
@@ -318,6 +323,7 @@ class AlphaGalaxyOmni:
             # --- 基本面 ---
             if 0 < pe <= 20: score += 20; logic.append(f"低估(PE{pe})")
             elif 20 < pe <= 50: score += 15
+            if pb > 10: score -= 5  # [Added Back] PB 惩罚
             
             # --- 趋势 ---
             if fac['close'] > fac['ma20'] > fac['ma60']:
@@ -325,16 +331,14 @@ class AlphaGalaxyOmni:
                 if fac['adx'] > 25: base += 10; logic.append(f"强趋势(ADX{int(fac['adx'])})")
                 score += base
             
-            # --- 资金与量价 (核心优化) ---
+            # --- 资金与量价 (Pro版核心逻辑) ---
             
             # 1. 缩量锁筹 (高分)
-            # 股价涨，但量比<1 (缩量)，说明主力控盘极好
             if (fac['pct_0'] > 0) and (0.5 < fac['vol_ratio'] < 1.0) and (fac['close'] > fac['ma20']):
                 score += 15
                 logic.append(f"缩量锁筹(量比{round(fac['vol_ratio'],2)})")
             
             # 2. 放量攻击 (常规)
-            # 股价涨，量比>1.5
             elif (fac['pct_0'] > 0) and (fac['vol_ratio'] > 1.5):
                 score += 10
                 logic.append(f"放量上攻(量比{round(fac['vol_ratio'],2)})")
@@ -344,8 +348,9 @@ class AlphaGalaxyOmni:
                 score -= 15
                 logic.append(f"⚠️高换手滞涨")
 
-            # CMF
+            # CMF [Enhanced] 融合了分层打分
             if fac['cmf_0'] > 0.1: score += 15; logic.append(f"资金抢筹")
+            elif fac['cmf_0'] > 0: score += 5 # [Added Back] 弱抢筹也有分
             
             # --- 动量与形态 ---
             if fac['cci'] > 100: score += 10; logic.append(f"CCI爆发")
@@ -362,7 +367,7 @@ class AlphaGalaxyOmni:
                 return {
                     "代码": symbol, "名称": name, "总分": score, "现价": fac['close'],
                     "市盈率": round(pe, 2), "市净率": round(pb, 2), "换手率%": round(turnover, 2),
-                    "量比": round(fac['vol_ratio'], 2), # 新增
+                    "量比": round(fac['vol_ratio'], 2), 
                     "建议买入区间": f"{round(buy_l,2)}~{round(buy_h,2)}",
                     "止损价": round(stop, 2), "止盈价": round(profit, 2),
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
@@ -380,7 +385,7 @@ class AlphaGalaxyOmni:
 
     def run(self):
         print(f"{'='*100}")
-        print(" 🌌 Alpha Galaxy Omni Pro - 机构级全维完全体 🌌")
+        print(" 🌌 Alpha Galaxy Omni Pro Max - 机构级全维融合版 🌌")
         print(f"{'='*100}")
         
         candidates = self.get_candidates()
@@ -421,7 +426,7 @@ class AlphaGalaxyOmni:
         print("\n" + "="*120)
         print(df[['代码', '名称', '总分', '现价', '舆情分析', '买入形态']].head(10).to_string(index=False))
         
-        filename = f"Alpha_Galaxy_Pro_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
         ExcelExporter.save(df, filename)
 
 if __name__ == "__main__":
