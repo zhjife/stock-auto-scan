@@ -431,4 +431,3 @@ class AlphaGalaxyOmni:
 
 if __name__ == "__main__":
     AlphaGalaxyOmni().run()
-​
