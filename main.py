@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni - 机构全维量化系统 (完全体)
-Features: 30+K线 | 基本面 | 技术指标 | NLP舆情 | 完整Excel字典
-Author: Quant Studio
+Alpha Galaxy Omni Pro - 机构全维量化系统 (最终量价逻辑增强版)
+Features: 
+1. 30+种严谨K线形态 (含风险预警)
+2. 量价动态分析 (缩量锁筹 vs 放量突破 vs 高位滞涨)
+3. 9大核心指标 (CMF/ADX/CCI/J值等)
+4. NLP 舆情风控
+5. Excel 完整字典导出
 """
 
 import akshare as ak
@@ -19,26 +23,21 @@ import time
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. 舆情分析引擎 (NLP Sentiment) [回归]
+# 1. 舆情分析引擎 (NLP Sentiment)
 # ==========================================
 class SentimentEngine:
     @staticmethod
     def analyze(symbol):
-        """
-        对个股进行新闻情感分析
-        """
         try:
-            # 获取个股新闻 (最近的)
             news_df = ak.stock_news_em(symbol=symbol)
             if news_df is None or news_df.empty:
                 return 0, "无近期舆情"
             
-            # 取最近 10 条新闻标题
             recent_news = news_df.head(10)
             titles = recent_news['新闻标题'].tolist()
             full_text = "。".join(titles)
             
-            # 1. 关键词硬匹配
+            # 关键词硬匹配
             pos_kw = ['增长', '预增', '突破', '利好', '回购', '获批', '中标', '大涨', '新高']
             neg_kw = ['立案', '调查', '亏损', '减持', '警示', '违规', '大跌', '退市', '被查']
             
@@ -52,19 +51,18 @@ class SentimentEngine:
                         keywords.append(kw)
                 for kw in neg_kw:
                     if kw in t: 
-                        hard_score -= 10 # 负面消息一票否决权更重
+                        hard_score -= 10 
                         keywords.append(kw)
             
-            # 2. NLP 软匹配
+            # NLP 软匹配
             s = SnowNLP(full_text)
             soft_score = (s.sentiments - 0.5) * 10
             
             total_score = hard_score + soft_score
-            total_score = max(min(total_score, 20), -20) # 限制区间
+            total_score = max(min(total_score, 20), -20)
             
             summary = f"关键词:{list(set(keywords))}" if keywords else "舆情平稳"
             return round(total_score, 1), summary
-            
         except Exception:
             return 0, "舆情获取失败"
 
@@ -87,7 +85,7 @@ class KLineStrictLib:
         score = 0
         
         # --- 底部反转 ---
-        if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2):
+          if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2):
             buy_pats.append("早晨之星"); score += 20
         if (get(l,-1)==l.iloc[-5:].min()) and (get(lower_s,-1)>=2*get(body,-1)) and (get(upper_s,-1)<=0.1*get(body,-1)):
             buy_pats.append("锤子线"); score += 15
@@ -103,7 +101,7 @@ class KLineStrictLib:
             buy_pats.append("身怀六甲"); score += 10
 
         # --- 攻击形态 ---
-        if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
+       if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
             buy_pats.append("红三兵"); score += 15
         if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)):
             buy_pats.append("上升三法"); score += 25
@@ -122,7 +120,7 @@ class KLineStrictLib:
             buy_pats.append("仙人指路"); score += 15
 
         # --- 风险形态 ---
-        if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
+if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
             risk_pats.append("风险:黄昏之星"); score -= 30
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2):
             risk_pats.append("风险:乌云盖顶"); score -= 25
@@ -142,7 +140,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎
+# 3. 高级指标计算引擎 (新增: 量比计算)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -150,8 +148,13 @@ class IndicatorEngine:
         if len(df) < 60: return None
         c = df['close']; h = df['high']; l = df['low']; v = df['volume']
         
+        # 均线
         ma5=c.rolling(5).mean(); ma10=c.rolling(10).mean(); ma20=c.rolling(20).mean(); ma60=c.rolling(60).mean()
         df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20
+        
+        # [NEW] 量比计算 (今日量/5日均量)
+        vol_ma5 = v.rolling(5).mean()
+        vol_ratio = v / vol_ma5.replace(0, 1)
         
         pct_change = c.pct_change() * 100
         mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
@@ -166,6 +169,7 @@ class IndicatorEngine:
         
         tp = (h + l + c) / 3
         cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
+        
         tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
         atr = tr.rolling(14).mean()
         
@@ -188,11 +192,12 @@ class IndicatorEngine:
             'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
             'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 'bb_width': bb_width.iloc[-1],
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
-            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3]
+            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3],
+            'vol_ratio': vol_ratio.iloc[-1] # [NEW] 
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (新增: 舆情列)
+# 4. Excel 导出引擎 (新增量比列)
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -201,11 +206,10 @@ class ExcelExporter:
         print(f"正在生成 Excel 报表: {filename} ...")
         
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-            # Sheet 1: 选股结果
             cols = [
                 '代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
-                '买入形态', '风险形态', '舆情分析', '得分详情',  # <--- 已包含舆情
-                '换手率%', '市盈率', '市净率',
+                '买入形态', '风险形态', '舆情分析', '得分详情', 
+                '换手率%', '量比', '市盈率', '市净率',  # [NEW] 增加量比
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
                 'CMF(今)', 'CMF(昨)', 'CMF(前)', 
                 '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
@@ -213,7 +217,7 @@ class ExcelExporter:
             df_export = df_data[cols]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # Sheet 2: 形态图解 (30+形态)
+            # 形态图解
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -242,26 +246,28 @@ class ExcelExporter:
             ]
             pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0]).to_excel(writer, sheet_name='形态图解', index=False)
             
-            # Sheet 3: 指标说明书
+            # 指标说明 (更新量比说明)
             indicators_desc = [
                 ['指标名称', '实战含义', '判断标准'],
-                ['市盈率(PE)', '估值', '0<PE<20为低估值(优)；PE<0为亏损(差)'],
-                ['市净率(PB)', '资产价格', 'PB>10可能高估'],
+                ['量比', '量能变化', '>1.5为放量；0.5-1.0为缩量(锁筹)'],
+                ['换手率', '活跃度', '3%-10%健康；>15%且滞涨则危险'],
                 ['CMF', '资金流', '连续3天为正且递增，说明主力持续拿货'],
                 ['J值 (KDJ)', '超买超卖', 'J<0为超卖(抄底)，J>100为超买(风险)'],
+                ['市盈率(PE)', '估值', '0<PE<20为低估值(优)；PE<0为亏损(差)'],
+                ['市净率(PB)', '资产价格', 'PB>10可能高估'],
                 ['布林带宽', '变盘前兆', '数值越小(<0.10)说明筹码越集中，即将变盘'],
                 ['BIAS', '乖离率', '正值过大要回调，负值过大有反弹'],
                 ['ADX', '趋势强度', '>25表示趋势强劲；<20表示震荡'],
                 ['RSI', '强弱指标', '50-80为强势区，>80过热'],
-                ['换手率', '活跃度', '3%-10%为健康活跃，>20%为妖股风险'],
                 ['CCI', '爆发力', '>100表示加速']
+
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
         print(f"✅ Excel 文件已保存至: {filename}")
 
 # ==========================================
-# 5. 策略主控 (漏斗式：技术初筛 -> 舆情精选)
+# 5. 策略主控 (漏斗式 + 量价逻辑优化)
 # ==========================================
 class AlphaGalaxyOmni:
     def __init__(self):
@@ -285,14 +291,14 @@ class AlphaGalaxyOmni:
         except:
             return []
 
-    # 第一阶段：技术+基本面并发扫描
     def scan_tech_fund(self, args):
         symbol, name, pe, pb, turnover = args
         try:
-            if pe < 0: return None # 亏损否决
+            if pe < 0: return None
             
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
+            # 使用前复权 qfq
             df = ak.stock_zh_a_hist(symbol=symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
             
             if df is None: return None
@@ -305,38 +311,58 @@ class AlphaGalaxyOmni:
             score = 0
             logic = []
             
-            # 否决
+            # --- 否决项 ---
             if risk_pats: score -= 30
             if fac['ma20'] < fac['ma60']: return None
             
-            # 基本面分
+            # --- 基本面 ---
             if 0 < pe <= 20: score += 20; logic.append(f"低估(PE{pe})")
             elif 20 < pe <= 50: score += 15
-            if pb > 10: score -= 5
             
-            # 技术分
+            # --- 趋势 ---
             if fac['close'] > fac['ma20'] > fac['ma60']:
                 base = 20
                 if fac['adx'] > 25: base += 10; logic.append(f"强趋势(ADX{int(fac['adx'])})")
                 score += base
             
-            if fac['cmf_0'] > 0.1: score += 15; logic.append(f"资金抢筹({round(fac['cmf_0'],2)})")
-            elif fac['cmf_0'] > 0: score += 5
+            # --- 资金与量价 (核心优化) ---
             
-            if fac['cci'] > 100: score += 10; logic.append(f"CCI爆发({int(fac['cci'])})")
+            # 1. 缩量锁筹 (高分)
+            # 股价涨，但量比<1 (缩量)，说明主力控盘极好
+            if (fac['pct_0'] > 0) and (0.5 < fac['vol_ratio'] < 1.0) and (fac['close'] > fac['ma20']):
+                score += 15
+                logic.append(f"缩量锁筹(量比{round(fac['vol_ratio'],2)})")
+            
+            # 2. 放量攻击 (常规)
+            # 股价涨，量比>1.5
+            elif (fac['pct_0'] > 0) and (fac['vol_ratio'] > 1.5):
+                score += 10
+                logic.append(f"放量上攻(量比{round(fac['vol_ratio'],2)})")
+            
+            # 3. 高换手滞涨 (风险)
+            if (turnover > 15) and (fac['pct_0'] < 2) and (fac['pct_0'] > -2):
+                score -= 15
+                logic.append(f"⚠️高换手滞涨")
+
+            # CMF
+            if fac['cmf_0'] > 0.1: score += 15; logic.append(f"资金抢筹")
+            
+            # --- 动量与形态 ---
+            if fac['cci'] > 100: score += 10; logic.append(f"CCI爆发")
             if fac['macd_dif'] > fac['macd_dea'] and fac['macd_dif'] > 0: score += 10
             if k_score > 0: score += k_score
 
+            # --- 输出 ---
             buy_l = fac['close'] * 0.99
             buy_h = fac['close'] * 1.01
             stop = fac['close'] - 2 * fac['atr']
             profit = fac['close'] + 3 * fac['atr']
             
             if score >= 65:
-                # 返回中间结果
                 return {
                     "代码": symbol, "名称": name, "总分": score, "现价": fac['close'],
                     "市盈率": round(pe, 2), "市净率": round(pb, 2), "换手率%": round(turnover, 2),
+                    "量比": round(fac['vol_ratio'], 2), # 新增
                     "建议买入区间": f"{round(buy_l,2)}~{round(buy_h,2)}",
                     "止损价": round(stop, 2), "止盈价": round(profit, 2),
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
@@ -354,13 +380,12 @@ class AlphaGalaxyOmni:
 
     def run(self):
         print(f"{'='*100}")
-        print(" 🌌 Alpha Galaxy Omni - 机构级全维完全体 🌌")
+        print(" 🌌 Alpha Galaxy Omni Pro - 机构级全维完全体 🌌")
         print(f"{'='*100}")
         
         candidates = self.get_candidates()
         print(f"1. 技术/基本面扫描 (待扫 {len(candidates)} 只)...")
         
-        # 阶段1: 高并发扫描基础数据
         tech_survivors = []
         with ThreadPoolExecutor(max_workers=16) as executor:
             for res in tqdm(executor.map(self.scan_tech_fund, candidates), total=len(candidates)):
@@ -370,18 +395,15 @@ class AlphaGalaxyOmni:
             print("无入围标的。")
             return
 
-        # 排序取 Top 30
         tech_survivors.sort(key=lambda x: x['总分'], reverse=True)
         top_picks = tech_survivors[:30]
         
         print(f"\n2. 舆情风控扫描 (针对 Top {len(top_picks)})...")
         final_results = []
         
-        # 阶段2: 逐个扫描舆情 (单线程防封)
         for stock in tqdm(top_picks):
             s_score, s_msg = SentimentEngine.analyze(stock['代码'])
             
-            # 舆情否决
             if s_score < -10:
                 print(f"⚠️ 剔除 {stock['名称']}: {s_msg}")
                 continue
@@ -393,15 +415,15 @@ class AlphaGalaxyOmni:
             final_results.append(stock)
             time.sleep(0.5)
 
-        # 最终输出
         final_results.sort(key=lambda x: x['总分'], reverse=True)
         df = pd.DataFrame(final_results)
         
         print("\n" + "="*120)
         print(df[['代码', '名称', '总分', '现价', '舆情分析', '买入形态']].head(10).to_string(index=False))
         
-        filename = f"Alpha_Galaxy_Omni_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        filename = f"Alpha_Galaxy_Pro_{datetime.now().strftime('%Y%m%d')}.xlsx"
         ExcelExporter.save(df, filename)
 
 if __name__ == "__main__":
     AlphaGalaxyOmni().run()
+​
