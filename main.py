@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终融合版 - 策略升级 A+B+C)
+Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终融合版 - 策略升级 A+B+C & 全字段输出)
 Features: 
 1. 30+种严谨K线形态
 2. 组合A: 主力意图 (量比+换手+位置)
 3. 组合B: 买卖校准 (MACD+RSI)
 4. 组合C: 真假突破 (布林带+资金流/黄金坑)
 5. NLP 舆情风控
-6. Excel 完整字典导出
+6. Excel 完整字典导出 (补全了历史CMF和涨幅数据)
 """
 
 import akshare as ak
@@ -141,7 +141,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎 (已修复：增加布林上下轨)
+# 3. 高级指标计算引擎 (已补全：布林上下轨 + 历史涨幅/CMF)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -204,14 +204,17 @@ class IndicatorEngine:
             'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 
             'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
             'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 
-            'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1], # 新增
+            'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1],
+            
+            # [RESTORED] 补全历史数据返回
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
-            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 
+            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3],
+            
             'vol_ratio': vol_ratio.iloc[-1] 
         }
 
 # ==========================================
-# 4. Excel 导出引擎 
+# 4. Excel 导出引擎 (已补全：字段表头)
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -225,9 +228,11 @@ class ExcelExporter:
                 '买入形态', '风险形态', '舆情分析', '得分详情', 
                 '换手率%', '量比', '市盈率', '市净率', 
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
-                'CMF(今)', '涨幅%(今)'
+                # [RESTORED] 补全字段
+                'CMF(今)', 'CMF(昨)', 'CMF(前)', 
+                '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
             ]
-            # 确保列存在
+            # 确保列存在 (防呆)
             df_export = df_data[[c for c in cols if c in df_data.columns]]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
@@ -406,8 +411,10 @@ class AlphaGalaxyOmni:
                     "J值": round(fac['j_val'], 1), "布林带宽": round(fac['bb_width'], 3),
                     "RSI": round(fac['rsi'], 1), "BIAS(%)": round(fac['bias'], 2),
                     "ADX": int(fac['adx']), "CCI": int(fac['cci']),
-                    "CMF(今)": round(fac['cmf_0'], 3),
-                    "涨幅%(今)": round(fac['pct_0'], 2)
+                    
+                    # [RESTORED] 补全历史数据字段
+                    "CMF(今)": round(fac['cmf_0'], 3), "CMF(昨)": round(fac['cmf_1'], 3), "CMF(前)": round(fac['cmf_2'], 3),
+                    "涨幅%(今)": round(fac['pct_0'], 2), "涨幅%(昨)": round(fac['pct_1'], 2), "涨幅%(前)": round(fac['pct_2'], 2)
                 }
             return None
         except:
@@ -454,7 +461,6 @@ class AlphaGalaxyOmni:
         df = pd.DataFrame(final_results)
         
         print("\n" + "="*120)
-        # 显示得分详情以便验证 A/B/C 策略生效情况
         print(df[['代码', '名称', '总分', '现价', '得分详情']].head(10).to_string(index=False))
         
         filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
