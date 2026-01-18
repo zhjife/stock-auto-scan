@@ -144,7 +144,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎 (保留 Pro 版的量比计算)
+# 3. 高级指标计算引擎 (修正版：对齐A股软件算法)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -156,7 +156,7 @@ class IndicatorEngine:
         ma5=c.rolling(5).mean(); ma10=c.rolling(10).mean(); ma20=c.rolling(20).mean(); ma60=c.rolling(60).mean()
         df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20
         
-        # [NEW] 量比计算 (Pro版核心)
+        # 量比计算
         vol_ma5 = v.rolling(5).mean()
         vol_ratio = v / vol_ma5.replace(0, 1)
         
@@ -164,29 +164,44 @@ class IndicatorEngine:
         mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
         cmf_series = (mf_mult * v).rolling(20).sum() / v.rolling(20).sum()
         
+        # KDJ (算法正确，保持不变)
         low_min = l.rolling(9).min(); high_max = h.rolling(9).max()
         rsv = (c - low_min) / (high_max - low_min) * 100
         K = rsv.ewm(com=2, adjust=False).mean(); D = K.ewm(com=2, adjust=False).mean(); J = 3 * K - 2 * D
         
+        # BOLL
         std20 = c.rolling(20).std(); bb_width = (4 * std20) / ma20
         bias = (c - ma20) / ma20 * 100
         
+        # CCI
         tp = (h + l + c) / 3
         cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
         
+        # [修改点 1] ATR: 使用 Wilder's Smoothing (alpha=1/14)
         tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
-        atr = tr.rolling(14).mean()
+        atr = tr.ewm(alpha=1/14, adjust=False).mean()
         
-        delta = c.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rsi = 100 - (100 / (1 + gain/loss))
+        # [修改点 2] RSI: 使用 Wilder's Smoothing 并计算 RSI-6 (最常用短线指标)
+        delta = c.diff()
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        # 这里的 6 对应 RSI1 (白线)
+        ema_up = up.ewm(alpha=1/6, adjust=False).mean()
+        ema_down = down.ewm(alpha=1/6, adjust=False).mean()
+        rsi = 100 - (100 / (1 + ema_up/ema_down))
 
-        up = h - h.shift(1); down = l.shift(1) - l
-        plus_dm = np.where((up > down) & (up > 0), up, 0.0); minus_dm = np.where((down > up) & (down > 0), down, 0.0)
-        tr_smooth = tr.rolling(14).sum()
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).sum() / tr_smooth)
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / tr_smooth)
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di); adx = dx.rolling(14).mean()
+        # ADX (趋向指标)
+        up_move = h - h.shift(1); down_move = l.shift(1) - l
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        # ADX也建议配合 ATR 的平滑方式
+        tr_smooth = tr.ewm(alpha=1/14, adjust=False).mean() 
+        plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1/14, adjust=False).mean() / tr_smooth)
+        minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1/14, adjust=False).mean() / tr_smooth)
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.ewm(alpha=1/14, adjust=False).mean()
         
+        # MACD (算法正确，保持不变)
         exp12 = c.ewm(span=12, adjust=False).mean(); exp26 = c.ewm(span=26, adjust=False).mean()
         dif = exp12 - exp26; dea = dif.ewm(span=9, adjust=False).mean()
 
