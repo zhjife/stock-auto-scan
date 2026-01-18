@@ -143,8 +143,8 @@ class KLineStrictLib:
 
         return score, buy_pats, risk_pats
 
-# ==========================================
-# 3. 高级指标计算引擎 (修正版：对齐A股软件算法)
+#  ==========================================
+# 3. 高级指标计算引擎 (已修改：增加布林上下轨)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -160,58 +160,56 @@ class IndicatorEngine:
         vol_ma5 = v.rolling(5).mean()
         vol_ratio = v / vol_ma5.replace(0, 1)
         
-        pct_change = c.pct_change() * 100
+        # CMF 资金流
         mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
         cmf_series = (mf_mult * v).rolling(20).sum() / v.rolling(20).sum()
         
-        # KDJ (算法正确，保持不变)
+        # KDJ
         low_min = l.rolling(9).min(); high_max = h.rolling(9).max()
         rsv = (c - low_min) / (high_max - low_min) * 100
         K = rsv.ewm(com=2, adjust=False).mean(); D = K.ewm(com=2, adjust=False).mean(); J = 3 * K - 2 * D
         
-        # BOLL
-        std20 = c.rolling(20).std(); bb_width = (4 * std20) / ma20
+        # 布林带 [UPDATED for Combo C]
+        std20 = c.rolling(20).std()
+        boll_up = ma20 + 2 * std20
+        boll_low = ma20 - 2 * std20
+        bb_width = (boll_up - boll_low) / ma20
+        
         bias = (c - ma20) / ma20 * 100
         
         # CCI
         tp = (h + l + c) / 3
         cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
         
-        # [修改点 1] ATR: 使用 Wilder's Smoothing (alpha=1/14)
+        # ATR & RSI
         tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
-        atr = tr.ewm(alpha=1/14, adjust=False).mean()
-        
-        # [修改点 2] RSI: 使用 Wilder's Smoothing 并计算 RSI-6 (最常用短线指标)
-        delta = c.diff()
-        up = delta.clip(lower=0)
-        down = -1 * delta.clip(upper=0)
-        # 这里的 6 对应 RSI1 (白线)
-        ema_up = up.ewm(alpha=1/6, adjust=False).mean()
-        ema_down = down.ewm(alpha=1/6, adjust=False).mean()
-        rsi = 100 - (100 / (1 + ema_up/ema_down))
+        atr = tr.rolling(14).mean()
+        delta = c.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rsi = 100 - (100 / (1 + gain/loss))
 
-        # ADX (趋向指标)
-        up_move = h - h.shift(1); down_move = l.shift(1) - l
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        # ADX也建议配合 ATR 的平滑方式
-        tr_smooth = tr.ewm(alpha=1/14, adjust=False).mean() 
-        plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1/14, adjust=False).mean() / tr_smooth)
-        minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1/14, adjust=False).mean() / tr_smooth)
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.ewm(alpha=1/14, adjust=False).mean()
+        # ADX
+        up = h - h.shift(1); down = l.shift(1) - l
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0); minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+        tr_smooth = tr.rolling(14).sum()
+        plus_di = 100 * (pd.Series(plus_dm).rolling(14).sum() / tr_smooth)
+        minus_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / tr_smooth)
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di); adx = dx.rolling(14).mean()
         
-        # MACD (算法正确，保持不变)
+        # MACD
         exp12 = c.ewm(span=12, adjust=False).mean(); exp26 = c.ewm(span=26, adjust=False).mean()
         dif = exp12 - exp26; dea = dif.ewm(span=9, adjust=False).mean()
 
         curr = df.iloc[-1]
+        pct_change = c.pct_change() * 100
+        
         return {
             'close': curr['close'], 'ma20': ma20.iloc[-1], 'ma60': ma60.iloc[-1],
-            'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
-            'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 'bb_width': bb_width.iloc[-1],
+            'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 
+            'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
+            'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 
+            'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1], # 新增
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
-            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3],
+            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 
             'vol_ratio': vol_ratio.iloc[-1] 
         }
 
@@ -311,14 +309,14 @@ class AlphaGalaxyOmni:
         except:
             return []
 
-    def scan_tech_fund(self, args):
+def scan_tech_fund(self, args):
         symbol, name, pe, pb, turnover = args
         try:
+            # 基础过滤：剔除亏损股 (可选)
             if pe < 0: return None
             
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
-            # 使用前复权 qfq
             df = ak.stock_zh_a_hist(symbol=symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
             
             if df is None: return None
@@ -333,43 +331,68 @@ class AlphaGalaxyOmni:
             
             # --- 否决项 ---
             if risk_pats: score -= 30
-            if fac['ma20'] < fac['ma60']: return None
             
-            # --- 基本面 ---
-            if 0 < pe <= 20: score += 20; logic.append(f"低估(PE{pe})")
-            elif 20 < pe <= 50: score += 15
-            if pb > 10: score -= 5  # [Added Back] PB 惩罚
+            # =========================================================
+            # 策略组合 A：量比 + 换手率 + 位置 = 【主力意图】
+            # =========================================================
+            is_trend_up = fac['close'] > fac['ma20']
             
-            # --- 趋势 ---
-            if fac['close'] > fac['ma20'] > fac['ma60']:
-                base = 20
-                if fac['adx'] > 25: base += 10; logic.append(f"强趋势(ADX{int(fac['adx'])})")
-                score += base
+            # 1. 锁筹/躺赢 (拉升中 + 低换手 + 量比平稳)
+            if is_trend_up and (1 < turnover < 5) and (0.5 < fac['vol_ratio'] < 1.2):
+                score += 20
+                logic.append("A:主力锁筹(最强)")
             
-            # --- 资金与量价 (Pro版核心逻辑) ---
-            
-            # 1. 缩量锁筹 (高分)
-            if (fac['pct_0'] > 0) and (0.5 < fac['vol_ratio'] < 1.0) and (fac['close'] > fac['ma20']):
+            # 2. 建仓/启动 (趋势向上 + 换手活跃 + 放量)
+            elif is_trend_up and (fac['vol_ratio'] > 1.5) and (fac['pct_0'] > 0):
                 score += 15
-                logic.append(f"缩量锁筹(量比{round(fac['vol_ratio'],2)})")
+                logic.append("A:放量启动")
             
-            # 2. 放量攻击 (常规)
-            elif (fac['pct_0'] > 0) and (fac['vol_ratio'] > 1.5):
-                score += 10
-                logic.append(f"放量上攻(量比{round(fac['vol_ratio'],2)})")
-            
-            # 3. 高换手滞涨 (风险)
-            if (turnover > 15) and (fac['pct_0'] < 2) and (fac['pct_0'] > -2):
-                score -= 15
-                logic.append(f"⚠️高换手滞涨")
+            # 3. 出货/滞涨 (高换手 + 滞涨) -> 扣分风险
+            if (turnover > 15) and (-2 < fac['pct_0'] < 2):
+                score -= 30
+                logic.append("A:⚠️高换手滞涨")
 
-            # CMF [Enhanced] 融合了分层打分
-            if fac['cmf_0'] > 0.1: score += 15; logic.append(f"资金抢筹")
-            elif fac['cmf_0'] > 0: score += 5 # [Added Back] 弱抢筹也有分
+            # =========================================================
+            # 策略组合 B：MACD + RSI = 【买卖点校准】
+            # =========================================================
+            macd_gold = (fac['macd_dif'] > fac['macd_dea']) and (fac['macd_dif'] > 0)
             
-            # --- 动量与形态 ---
-            if fac['cci'] > 100: score += 10; logic.append(f"CCI爆发")
-            if fac['macd_dif'] > fac['macd_dea'] and fac['macd_dif'] > 0: score += 10
+            if macd_gold:
+                # 只有当情绪不过热时，MACD金叉才有效
+                if fac['rsi'] < 80:
+                    score += 10
+                    logic.append("B:趋势情绪共振")
+                else:
+                    # MACD金叉 但 RSI过热 = 假买点
+                    score -= 5
+                    logic.append("B:⚠️假买点(RSI过热)")
+            
+            # 同样的，如果 RSI 极低，即使趋势差，也不要盲目看空(这里主要做买入策略，略过做空逻辑)
+
+            # =========================================================
+            # 策略组合 C：布林带 + 资金流 = 【真假突破】
+            # =========================================================
+            # 1. 黄金坑 (股价跌破下轨 + 资金流入)
+            if (fac['close'] < fac['bb_low']) and (fac['cmf_0'] > 0.1):
+                score += 40  # 极高分，因为这是绝佳的反转点
+                logic.append("C:黄金坑(破位+资金进)")
+            
+            # 2. 顶背离/诱多 (股价突破上轨 + 资金流出)
+            if (fac['close'] > fac['bb_up']) and (fac['cmf_0'] < -0.05):
+                score -= 40
+                logic.append("C:⚠️顶背离(诱多)")
+
+            # =========================================================
+            # 其他辅助加分
+            # =========================================================
+            # 估值保护
+            if 0 < pe <= 25: score += 10
+            if pb > 10: score -= 5
+            
+            # 趋势强度 (ADX)
+            if fac['adx'] > 25 and is_trend_up: score += 5
+            
+            # 形态得分
             if k_score > 0: score += k_score
 
             # --- 输出 ---
@@ -378,6 +401,7 @@ class AlphaGalaxyOmni:
             stop = fac['close'] - 2 * fac['atr']
             profit = fac['close'] + 3 * fac['atr']
             
+            # 门槛设定：因为移除了趋势强过滤，这里的总分门槛可以稍微卡死一点，或者保持65
             if score >= 65:
                 return {
                     "代码": symbol, "名称": name, "总分": score, "现价": fac['close'],
@@ -388,11 +412,10 @@ class AlphaGalaxyOmni:
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
                     "风险形态": " | ".join(risk_pats) if risk_pats else "-",
                     "得分详情": " ".join(logic),
-                    "J值": round(fac['j_val'], 1), "布林带宽": round(fac['bb_width'], 3),
-                    "RSI": round(fac['rsi'], 1), "BIAS(%)": round(fac['bias'], 2),
-                    "ADX": int(fac['adx']), "CCI": int(fac['cci']),
-                    "CMF(今)": round(fac['cmf_0'], 3), "CMF(昨)": round(fac['cmf_1'], 3), "CMF(前)": round(fac['cmf_2'], 3),
-                    "涨幅%(今)": round(fac['pct_0'], 2), "涨幅%(昨)": round(fac['pct_1'], 2), "涨幅%(前)": round(fac['pct_2'], 2)
+                    "J值": round(fac['j_val'], 1), 
+                    "RSI": round(fac['rsi'], 1), 
+                    "CMF(今)": round(fac['cmf_0'], 3),
+                    "涨幅%(今)": round(fac['pct_0'], 2)
                 }
             return None
         except:
