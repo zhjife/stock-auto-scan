@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终融合版 - 策略升级 A+B+C & 全字段输出)
+Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终融合版 - 策略升级 A+B+C & 全字段输出 & 30+形态库)
 Features: 
-1. 30+种严谨K线形态
+1. 30+种严谨K线形态 (完整覆盖：岛形反转/旭日东升/墓碑线等)
 2. 组合A: 主力意图 (量比+换手+位置)
 3. 组合B: 买卖校准 (MACD+RSI)
 4. 组合C: 真假突破 (布林带+资金流/黄金坑)
 5. NLP 舆情风控
-6. Excel 完整字典导出 (补全了历史CMF和涨幅数据)
+6. Excel 完整字典导出 (补全了历史CMF和涨幅数据及所有形态图解)
 """
 
 import akshare as ak
@@ -68,75 +68,164 @@ class SentimentEngine:
             return 0, "舆情获取失败"
 
 # ==========================================
-# 2. 严谨K线形态识别引擎 (30+种)
+# 2. 严谨K线形态识别引擎 (30+种 - 完整扩充版)
 # ==========================================
 class KLineStrictLib:
     @staticmethod
     def detect(df):
-        if len(df) < 20: return 0, [], []
-        c, o, h, l, v = df['close'], df['open'], df['high'], df['low'], df['volume']
+        if len(df) < 30: return 0, [], []
+        
+        # 数据准备
+        c = df['close']; o = df['open']; h = df['high']; l = df['low']; v = df['volume']
         ma5, ma10, ma20 = df['ma5'], df['ma10'], df['ma20']
+        
+        # 实体大小与影线
         body = np.abs(c - o)
         upper_s = h - np.maximum(c, o)
         lower_s = np.minimum(c, o) - l
         avg_body = body.rolling(10).mean()
+        
         def get(s, i): return s.iloc[i]
         
         buy_pats, risk_pats = [], []
         score = 0
         
-        # --- 底部/反转 (买入) ---
+        # ==================== A. 底部/反转 (买入) ====================
+        
+        # 1. 早晨之星 (经典)
         if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2):
             buy_pats.append("早晨之星"); score += 20
+            
+        # 2. 锤子线
         if (get(l,-1)==l.iloc[-5:].min()) and (get(lower_s,-1)>=2*get(body,-1)) and (get(upper_s,-1)<=0.1*get(body,-1)):
             buy_pats.append("锤子线"); score += 15
+            
+        # 3. 倒锤头
         if (get(l,-1)==l.iloc[-5:].min()) and (get(upper_s,-1)>=2*get(body,-1)) and (get(lower_s,-1)<=0.1*get(body,-1)):
             buy_pats.append("倒锤头"); score += 10
+            
+        # 4. 阳包阴
         if (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(o,-1)<get(c,-2)) and (get(c,-1)>get(o,-2)):
             buy_pats.append("阳包阴"); score += 20
+            
+        # 5. 曙光初现
         if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(o,-1)<get(l,-2)) and (get(c,-1)>(get(o,-2)+get(c,-2))/2):
             buy_pats.append("曙光初现"); score += 15
-        if abs(get(l,-1)-get(l,-2))<(get(c,-1)*0.002) and (get(l,-1)==l.iloc[-10:].min()):
-            buy_pats.append("镊子底"); score += 10
-        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)>get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)) and (get(c,-1)<get(c,-20)):
-            buy_pats.append("身怀六甲"); score += 10
+            
+        # 6. 平底 (新增)
+        if abs(get(l,-1)-get(l,-2)) < (get(c,-1)*0.003) and (get(l,-1) <= l.iloc[-10:].min()):
+            buy_pats.append("平底"); score += 15
+            
+        # 7. 多头孕线 (原身怀六甲)
+        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)>get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)):
+            buy_pats.append("多头孕线"); score += 15
+            
+        # 8. 旭日东升 (新增 - 强反转)
+        # 前日大阴，今日高开高走，收盘高于前日开盘
+        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)*1.2) and (get(o,-1)>get(c,-2)) and (get(c,-1)>get(o,-2)):
+            buy_pats.append("旭日东升"); score += 25
+            
+        # 9. 岛形反转(底) (新增 - 极强)
+        # 前几天向下跳空，中间盘整，今日向上跳空
+        if (get(h,-2) < get(l,-3)) and (get(l,-1) > get(h,-2)): 
+            buy_pats.append("岛形反转(底)"); score += 35
+            
+        # 10. 踢脚线 (新增)
+        # 只有下影线没有上影线，大阳
+        if (get(upper_s,-1) == 0) and (get(lower_s,-1) > 0) and (get(c,-1)>get(o,-1)) and (get(o,-1) > get(h,-2)):
+            buy_pats.append("踢脚线"); score += 20
+            
+        # 11. 蜻蜓点水 (新增)
+        # 低点触碰MA20/30后拉起
+        if (get(l,-1) <= get(ma20,-1)) and (min(get(o,-1), get(c,-1)) > get(ma20,-1)) and (get(c,-1)>get(o,-1)):
+            buy_pats.append("蜻蜓点水"); score += 15
 
-        # --- 攻击/突破 (买入) ---
+        # ==================== B. 攻击/突破 (买入) ====================
+        
+        # 12. 红三兵
         if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
             buy_pats.append("红三兵"); score += 15
+            
+        # 13. 上升三法
         if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)):
             buy_pats.append("上升三法"); score += 25
+            
+        # 14. 多方炮
         if (get(c,-3)>get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-3)):
             buy_pats.append("多方炮"); score += 20
+            
+        # 15. 向上缺口 (跳空缺口)
         if get(l,-1)>get(h,-2):
-            buy_pats.append("跳空缺口"); score += 15
+            buy_pats.append("向上缺口"); score += 15
+            
+        # 16. 一阳穿三线
         if (get(c,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
             buy_pats.append("一阳穿三线"); score += 25
+            
+        # 17. 倍量过左峰
         if (get(v,-1)>get(v,-2)*1.9) and (get(c,-1)>=c.iloc[-20:].max()):
             buy_pats.append("倍量过左峰"); score += 20
+            
+        # 18. 金蜘蛛
         diff = max(get(ma5,-1),get(ma10,-1),get(ma20,-1)) - min(get(ma5,-1),get(ma10,-1),get(ma20,-1))
-        if (diff/get(c,-1)<0.015) and (get(c,-1)>get(ma5,-1)):
+        if (diff/get(c,-1)<0.015) and (get(c,-1)>get(ma5,-1)) and (get(c,-1)>get(o,-1)):
             buy_pats.append("金蜘蛛"); score += 15
+            
+        # 19. 仙人指路
         if (get(upper_s,-2)>get(body,-2)) and (get(c,-1)>get(h,-2)) and (get(c,-1)>get(o,-1)):
             buy_pats.append("仙人指路"); score += 15
 
-        # --- 风险形态 (卖出/否决) ---
+        # ==================== C. 风险形态 (卖出/否决) ====================
+        
+        # 20. 黄昏之星
         if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
             risk_pats.append("风险:黄昏之星"); score -= 30
+            
+        # 21. 乌云盖顶
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2):
             risk_pats.append("风险:乌云盖顶"); score -= 25
-        if (get(c,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
-            risk_pats.append("风险:断头铡刀"); score -= 40
-        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)):
-            risk_pats.append("风险:三只乌鸦"); score -= 30
-        if get(h,-1)<get(l,-2):
-            risk_pats.append("风险:向下缺口"); score -= 20
+            
+        # 22. 阴包阳
         if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)):
             risk_pats.append("风险:阴包阳"); score -= 25
+            
+        # 23. 三只乌鸦
+        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)):
+            risk_pats.append("风险:三只乌鸦"); score -= 30
+            
+        # 24. 射击之星
         if (get(upper_s,-1)>2*get(body,-1)) and (get(lower_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15):
             risk_pats.append("风险:射击之星"); score -= 20
+            
+        # 25. 吊颈线
         if (get(lower_s,-1)>2*get(body,-1)) and (get(upper_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15):
             risk_pats.append("风险:吊颈线"); score -= 20
+            
+        # 26. 断头铡刀
+        if (get(c,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
+            risk_pats.append("风险:断头铡刀"); score -= 40
+            
+        # 27. 向下缺口
+        if get(h,-1)<get(l,-2):
+            risk_pats.append("风险:向下缺口"); score -= 20
+            
+        # 28. 倾盆大雨 (新增)
+        # 低开低走大阴线，收盘低于前日开盘
+        if (get(c,-2)>get(o,-2)) and (get(o,-1)<get(c,-2)) and (get(c,-1)<get(o,-2)) and (get(c,-1)<get(o,-1)):
+            risk_pats.append("风险:倾盆大雨"); score -= 25
+            
+        # 29. 空头孕线 (新增)
+        if (get(c,-2)>get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)<get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)) and (get(c,-1)>get(c,-20)*1.1):
+            risk_pats.append("风险:空头孕线"); score -= 20
+            
+        # 30. 岛形反转(顶) (新增 - 极度危险)
+        if (get(l,-2) > get(h,-3)) and (get(h,-1) < get(l,-2)):
+            risk_pats.append("风险:岛形反转(顶)"); score -= 50
+            
+        # 31. 墓碑线 (新增)
+        # 倒T字，高位，多头力竭
+        if (get(body,-1) < 0.005*get(c,-1)) and (get(upper_s,-1) > 3*get(body,-1)) and (get(lower_s,-1) < get(body,-1)) and (get(c,-1) > get(c,-20)*1.2):
+            risk_pats.append("风险:墓碑线"); score -= 30
 
         return score, buy_pats, risk_pats
 
@@ -214,7 +303,7 @@ class IndicatorEngine:
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (已补全：字段表头)
+# 4. Excel 导出引擎 (更新：包含30+种形态说明)
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -228,7 +317,6 @@ class ExcelExporter:
                 '买入形态', '风险形态', '舆情分析', '得分详情', 
                 '换手率%', '量比', '市盈率', '市净率', 
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
-                # [RESTORED] 补全字段
                 'CMF(今)', 'CMF(昨)', 'CMF(前)', 
                 '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
             ]
@@ -236,29 +324,40 @@ class ExcelExporter:
             df_export = df_data[[c for c in cols if c in df_data.columns]]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # 形态图解
+            # 形态图解 (完整 30+ 种)
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
                 ['锤子线', '买入-反转', '底部长下影线，主力试盘后拉回，支撑强'],
-                ['倒锤头', '买入-反转', '底部长上影线，主力低位试盘'],
+                ['倒锤头', '买入-反转', '底部长上影线，主力低位试盘，抛压减轻'],
                 ['阳包阴', '买入-反转', '今日阳线完全包住昨日阴线，多头反击'],
                 ['曙光初现', '买入-反转', '大阴线后低开高走，阳线刺入阴线一半'],
-                ['红三兵', '买入-攻击', '连续三天阳线稳步推升，重心上移'],
+                ['平底', '买入-反转', '两日最低价相同，筑底成功'],
+                ['多头孕线', '买入-反转', '长阴包含小K线，底部孕育，变盘在即'],
+                ['旭日东升', '买入-强反转', '大阴线后高开高走，收盘价高于前日开盘'],
+                ['岛形反转(底)', '买入-强反转', '下跌缺口+盘整+上涨缺口，超强反转'],
+                ['踢脚线', '买入-强反转', '大阴线后直接高开高走，无上影，主力暴力反转'],
+                ['蜻蜓点水', '买入-技巧', '股价回踩均线(MA20/30)后立即弹起'],
+                ['红三兵', '买入-攻击', '连续三天阳线稳步推升'],
                 ['上升三法', '买入-持续', '大阳后接三小阴不破低，再接大阳'],
-                ['多方炮', '买入-攻击', '阳阴阳组合，洗盘结束信号'],
-                ['跳空缺口', '买入-强势', '向上跳空不回补，主力强势'],
+                ['多方炮', '买入-攻击', '阳阴阳组合，洗盘结束，再次上攻'],
+                ['向上缺口', '买入-强势', '向上跳空不回补，主力强势特征'],
                 ['一阳穿三线', '买入-突破', '大阳线同时突破5/10/20均线'],
                 ['倍量过左峰', '买入-突破', '成交量翻倍且价格突破前期高点'],
                 ['金蜘蛛', '买入-突破', '均线粘合后放量向上发散'],
                 ['仙人指路', '买入-试盘', '今日大阳线突破昨日的长上影线'],
-                ['风险:黄昏之星', '卖出-风险', '顶部：阳线+星线+阴线，见顶'],
-                ['风险:乌云盖顶', '卖出-风险', '大阳后接大阴，吃掉一半涨幅'],
-                ['风险:阴包阳', '卖出-风险', '空头吞噬，阴线包住阳线'],
-                ['风险:三只乌鸦', '卖出-风险', '连续三根阴线杀跌，资金出逃'],
-                ['风险:射击之星', '卖出-风险', '高位长上影线，冲高回落'],
-                ['风险:吊颈线', '卖出-风险', '高位长下影线，诱多'],
-                ['风险:断头铡刀', '卖出-风险', '一阴断多线，趋势崩塌'],
+                ['黄昏之星', '卖出-风险', '顶部三日组合：阳线+星线+阴线'],
+                ['乌云盖顶', '卖出-风险', '大阳后接大阴，吃掉一半涨幅'],
+                ['阴包阳', '卖出-风险', '空头吞噬，阴线包住阳线'],
+                ['三只乌鸦', '卖出-风险', '连续三根阴线杀跌'],
+                ['射击之星', '卖出-风险', '高位长上影线，冲高回落'],
+                ['吊颈线', '卖出-风险', '高位长下影线，主力诱多'],
+                ['断头铡刀', '卖出-风险', '一阴断多线，趋势崩塌'],
+                ['向下缺口', '卖出-风险', '向下跳空不回补，极弱势'],
+                ['倾盆大雨', '卖出-风险', '低开低走大阴线，吞没前日涨幅'],
+                ['空头孕线', '卖出-风险', '高位长阳包含小K线，滞涨信号'],
+                ['岛形反转(顶)', '卖出-风险', '上涨缺口+盘整+下跌缺口，见顶信号'],
+                ['墓碑线', '卖出-风险', '高位T字线，多头力竭'],
                 ['黄金坑', '买入-机会', '跌破布林下轨且主力资金逆势进场']
             ]
             pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0]).to_excel(writer, sheet_name='形态图解', index=False)
@@ -422,7 +521,7 @@ class AlphaGalaxyOmni:
 
     def run(self):
         print(f"{'='*100}")
-        print(" 🌌 Alpha Galaxy Omni Pro Max - 机构级全维融合版 (Strat A+B+C) 🌌")
+        print(" 🌌 Alpha Galaxy Omni Pro Max - 机构级全维融合版 (Strat A+B+C & 30+ Pattern Lib) 🌌")
         print(f"{'='*100}")
         
         candidates = self.get_candidates()
