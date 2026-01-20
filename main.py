@@ -8,6 +8,7 @@ Features:
 4. 组合C: 真假突破 (布林带+资金流/黄金坑)
 5. NLP 舆情风控
 6. Excel 完整字典导出 (补全了历史CMF和涨幅数据及所有形态图解)
+7. 新增：MACD状态与KDJ状态详解 (金叉/死叉/红绿柱伸缩)
 """
 
 import akshare as ak
@@ -230,7 +231,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎 (已补全：布林上下轨 + 历史涨幅/CMF)
+# 3. 高级指标计算引擎 (已补全：布林上下轨 + 历史涨幅/CMF + 历史MACD/KDJ)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -253,7 +254,9 @@ class IndicatorEngine:
         # KDJ
         low_min = l.rolling(9).min(); high_max = h.rolling(9).max()
         rsv = (c - low_min) / (high_max - low_min) * 100
-        K = rsv.ewm(com=2, adjust=False).mean(); D = K.ewm(com=2, adjust=False).mean(); J = 3 * K - 2 * D
+        K = rsv.ewm(com=2, adjust=False).mean()
+        D = K.ewm(com=2, adjust=False).mean()
+        J = 3 * K - 2 * D
         
         # 布林带 [UPDATED for Combo C]
         std20 = c.rolling(20).std()
@@ -284,6 +287,7 @@ class IndicatorEngine:
         # MACD
         exp12 = c.ewm(span=12, adjust=False).mean(); exp26 = c.ewm(span=26, adjust=False).mean()
         dif = exp12 - exp26; dea = dif.ewm(span=9, adjust=False).mean()
+        macd_bar = 2 * (dif - dea)
 
         curr = df.iloc[-1]
         pct_change = c.pct_change() * 100
@@ -292,7 +296,20 @@ class IndicatorEngine:
             'close': curr['close'], 'ma20': ma20.iloc[-1], 'ma60': ma60.iloc[-1],
             'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 
             'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
-            'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 
+            
+            # [Added] 历史MACD数据用于状态判断
+            'dif_0': dif.iloc[-1], 'dif_1': dif.iloc[-2],
+            'dea_0': dea.iloc[-1], 'dea_1': dea.iloc[-2],
+            'macd_bar_0': macd_bar.iloc[-1], 'macd_bar_1': macd_bar.iloc[-2],
+            
+            'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 
+            
+            # [Added] KDJ历史数据
+            'j_val': J.iloc[-1], 
+            'k_0': K.iloc[-1], 'k_1': K.iloc[-2],
+            'd_0': D.iloc[-1], 'd_1': D.iloc[-2],
+            
+            'bias': bias.iloc[-1], 
             'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1],
             
             # [RESTORED] 补全历史数据返回
@@ -303,7 +320,7 @@ class IndicatorEngine:
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (更新：包含30+种形态说明)
+# 4. Excel 导出引擎 (更新：包含30+种形态说明 & 新增MACD/KDJ状态列)
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -315,6 +332,7 @@ class ExcelExporter:
             cols = [
                 '代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
                 '买入形态', '风险形态', '舆情分析', '得分详情', 
+                'MACD状态', 'KDJ状态', # [New Columns]
                 '换手率%', '量比', '市盈率', '市净率', 
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
                 'CMF(今)', 'CMF(昨)', 'CMF(前)', 
@@ -375,7 +393,9 @@ class ExcelExporter:
                 ['ADX', '趋势强度', '>25表示趋势强劲；<20表示震荡'],
                 ['RSI', '强弱指标', '50-80为强势区，>80过热'],
                 ['换手率', '活跃度', '3%-10%健康；>15%且滞涨则危险'],
-                ['CCI', '爆发力', '>100表示加速']
+                ['CCI', '爆发力', '>100表示加速'],
+                ['MACD状态', '趋势判断', '红柱伸长表加速上涨，绿柱缩短表止跌反弹'],
+                ['KDJ状态', '短线买卖', '低位金叉为买点，高位死叉为卖点']
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
@@ -429,6 +449,38 @@ class AlphaGalaxyOmni:
             # --- 否决项 ---
             if risk_pats: score -= 30
             
+            # =========================================================
+            # [Added] MACD 状态判断逻辑
+            # =========================================================
+            dif0, dea0, dif1, dea1 = fac['dif_0'], fac['dea_0'], fac['dif_1'], fac['dea_1']
+            bar0, bar1 = fac['macd_bar_0'], fac['macd_bar_1']
+            
+            # 交叉判断
+            macd_cross_str = ""
+            if dif0 > dea0 and dif1 <= dea1: macd_cross_str = "金叉(新)"
+            elif dif0 < dea0 and dif1 >= dea1: macd_cross_str = "死叉(新)"
+            else: macd_cross_str = "金叉持仓" if dif0 > dea0 else "死叉持币"
+            
+            # 红绿柱伸缩判断
+            bar_status_str = ""
+            if bar0 > 0:
+                bar_status_str = "红柱伸长" if bar0 > bar1 else "红柱缩短"
+            else:
+                # 负数比较：例如 -5 > -10 为真，表示绿柱变短（反弹迹象）
+                bar_status_str = "绿柱缩短" if bar0 > bar1 else "绿柱伸长"
+            
+            macd_full_status = f"{macd_cross_str} | {bar_status_str}"
+
+            # =========================================================
+            # [Added] KDJ 状态判断逻辑
+            # =========================================================
+            k0, d0, k1, d1 = fac['k_0'], fac['d_0'], fac['k_1'], fac['d_1']
+            
+            kdj_status_str = ""
+            if k0 > d0 and k1 <= d1: kdj_status_str = "金叉(新)"
+            elif k0 < d0 and k1 >= d1: kdj_status_str = "死叉(新)"
+            else: kdj_status_str = "多头排列" if k0 > d0 else "空头排列"
+
             # =========================================================
             # 策略组合 A：量比 + 换手率 + 位置 = 【主力意图】
             # =========================================================
@@ -507,6 +559,11 @@ class AlphaGalaxyOmni:
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
                     "风险形态": " | ".join(risk_pats) if risk_pats else "-",
                     "得分详情": " ".join(logic),
+                    
+                    # [Added Output] 新增状态列
+                    "MACD状态": macd_full_status,
+                    "KDJ状态": kdj_status_str,
+                    
                     "J值": round(fac['j_val'], 1), "布林带宽": round(fac['bb_width'], 3),
                     "RSI": round(fac['rsi'], 1), "BIAS(%)": round(fac['bias'], 2),
                     "ADX": int(fac['adx']), "CCI": int(fac['cci']),
@@ -560,7 +617,7 @@ class AlphaGalaxyOmni:
         df = pd.DataFrame(final_results)
         
         print("\n" + "="*120)
-        print(df[['代码', '名称', '总分', '现价', '得分详情']].head(10).to_string(index=False))
+        print(df[['代码', '名称', '总分', '现价', 'MACD状态', 'KDJ状态']].head(10).to_string(index=False))
         
         filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
         ExcelExporter.save(df, filename)
