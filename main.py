@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni Pro Max - 机构全维量化系统 (完整补全版 - 双源容灾)
+Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终修复版 - 雪球自动翻页)
 Features: 
-1. [Core Fix] 双重数据保障：
-   - 首选：东方财富 (多节点轮询 + Playwright)
-   - 备用：雪球 (Xueqiu) 接口 (Playwright 获取 Cookie)
-2. [Complete] 完整补全 30+ 种 K 线形态识别逻辑
-3. [Complete] 完整补全 Excel 导出的形态图解和指标说明字典
-4. [Strategy] 完整保留 A+B+C 策略及 MACD/KDJ 状态详解
+1. [Fix] 修复雪球接口只返回30条的问题 -> 增加 while 循环自动翻页获取全市场
+2. [Dual Source] 东方财富(首选) + 雪球(备用)
+3. 完整保留所有策略与导出功能
 """
 
 import akshare as ak
@@ -23,296 +20,154 @@ import json
 import random
 import re
 
-# === 引入 Playwright (核心依赖) ===
+# === 引入 Playwright ===
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
     print("❌ 缺少 playwright 库，请先运行: pip install playwright && playwright install chromium")
     exit(1)
 
-# 配置
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. 舆情分析引擎 (NLP Sentiment)
+# 1. 舆情分析 (保持不变)
 # ==========================================
 class SentimentEngine:
     @staticmethod
     def analyze(symbol):
         try:
             news_df = ak.stock_news_em(symbol=symbol)
-            if news_df is None or news_df.empty:
-                return 0, "无近期舆情"
-            
+            if news_df is None or news_df.empty: return 0, "无近期舆情"
             recent_news = news_df.head(10)
             titles = recent_news['新闻标题'].tolist()
             full_text = "。".join(titles)
-            
-            # 关键词硬匹配
             pos_kw = ['增长', '预增', '突破', '利好', '回购', '获批', '中标', '大涨', '新高']
             neg_kw = ['立案', '调查', '亏损', '减持', '警示', '违规', '大跌', '退市', '被查']
-            
             hard_score = 0
             keywords = []
-            
             for t in titles:
                 for kw in pos_kw:
-                    if kw in t: 
-                        hard_score += 2
-                        keywords.append(kw)
+                    if kw in t: hard_score += 2; keywords.append(kw)
                 for kw in neg_kw:
-                    if kw in t: 
-                        hard_score -= 10 
-                        keywords.append(kw)
-            
-            # NLP 软匹配
+                    if kw in t: hard_score -= 10; keywords.append(kw)
             s = SnowNLP(full_text)
             soft_score = (s.sentiments - 0.5) * 10
-            
-            total_score = hard_score + soft_score
-            total_score = max(min(total_score, 20), -20)
-            
-            summary = f"关键词:{list(set(keywords))}" if keywords else "舆情平稳"
-            return round(total_score, 1), summary
-        except Exception:
-            return 0, "舆情获取失败"
+            total_score = max(min(hard_score + soft_score, 20), -20)
+            return round(total_score, 1), f"关键词:{list(set(keywords))}" if keywords else "舆情平稳"
+        except: return 0, "舆情获取失败"
 
 # ==========================================
-# 2. 严谨K线形态识别引擎 (30+种 - 完整补全版)
+# 2. K线形态 (保持不变)
 # ==========================================
 class KLineStrictLib:
     @staticmethod
     def detect(df):
         if len(df) < 30: return 0, [], []
-        
-        # 数据准备
         c = df['close']; o = df['open']; h = df['high']; l = df['low']; v = df['volume']
         ma5, ma10, ma20 = df['ma5'], df['ma10'], df['ma20']
-        
-        # 实体大小与影线
-        body = np.abs(c - o)
-        upper_s = h - np.maximum(c, o)
-        lower_s = np.minimum(c, o) - l
+        body = np.abs(c - o); upper_s = h - np.maximum(c, o); lower_s = np.minimum(c, o) - l
         avg_body = body.rolling(10).mean()
-        
         def get(s, i): return s.iloc[i]
-        
         buy_pats, risk_pats = [], []
         score = 0
         
-        # ==================== A. 底部/反转 (买入) ====================
-        
-        # 1. 早晨之星
-        if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2):
-            buy_pats.append("早晨之星"); score += 20
-        # 2. 锤子线
-        if (get(l,-1)==l.iloc[-5:].min()) and (get(lower_s,-1)>=2*get(body,-1)) and (get(upper_s,-1)<=0.1*get(body,-1)):
-            buy_pats.append("锤子线"); score += 15
-        # 3. 倒锤头
-        if (get(l,-1)==l.iloc[-5:].min()) and (get(upper_s,-1)>=2*get(body,-1)) and (get(lower_s,-1)<=0.1*get(body,-1)):
-            buy_pats.append("倒锤头"); score += 10
-        # 4. 阳包阴
-        if (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(o,-1)<get(c,-2)) and (get(c,-1)>get(o,-2)):
-            buy_pats.append("阳包阴"); score += 20
-        # 5. 曙光初现
-        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(o,-1)<get(l,-2)) and (get(c,-1)>(get(o,-2)+get(c,-2))/2):
-            buy_pats.append("曙光初现"); score += 15
-        # 6. 平底
-        if abs(get(l,-1)-get(l,-2)) < (get(c,-1)*0.003) and (get(l,-1) <= l.iloc[-10:].min()):
-            buy_pats.append("平底"); score += 15
-        # 7. 多头孕线
-        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)>get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)):
-            buy_pats.append("多头孕线"); score += 15
-        # 8. 旭日东升
-        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)*1.2) and (get(o,-1)>get(c,-2)) and (get(c,-1)>get(o,-2)):
-            buy_pats.append("旭日东升"); score += 25
-        # 9. 岛形反转(底)
-        if (get(h,-2) < get(l,-3)) and (get(l,-1) > get(h,-2)): 
-            buy_pats.append("岛形反转(底)"); score += 35
-        # 10. 踢脚线
-        if (get(upper_s,-1) == 0) and (get(lower_s,-1) > 0) and (get(c,-1)>get(o,-1)) and (get(o,-1) > get(h,-2)):
-            buy_pats.append("踢脚线"); score += 20
-        # 11. 蜻蜓点水
-        if (get(l,-1) <= get(ma20,-1)) and (min(get(o,-1), get(c,-1)) > get(ma20,-1)) and (get(c,-1)>get(o,-1)):
-            buy_pats.append("蜻蜓点水"); score += 15
-
-        # ==================== B. 攻击/突破 (买入) ====================
-        
-        # 12. 红三兵
-        if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)):
-            buy_pats.append("红三兵"); score += 15
-        # 13. 上升三法
-        if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)):
-            buy_pats.append("上升三法"); score += 25
-        # 14. 多方炮
-        if (get(c,-3)>get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-3)):
-            buy_pats.append("多方炮"); score += 20
-        # 15. 向上缺口
-        if get(l,-1)>get(h,-2):
-            buy_pats.append("向上缺口"); score += 15
-        # 16. 一阳穿三线
-        if (get(c,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
-            buy_pats.append("一阳穿三线"); score += 25
-        # 17. 倍量过左峰
-        if (get(v,-1)>get(v,-2)*1.9) and (get(c,-1)>=c.iloc[-20:].max()):
-            buy_pats.append("倍量过左峰"); score += 20
-        # 18. 金蜘蛛
+        # 买入
+        if (get(c,-3)<get(o,-3)) and (get(body,-3)>get(avg_body,-3)) and (get(h,-2)<get(l,-3)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>(get(o,-3)+get(c,-3))/2): buy_pats.append("早晨之星"); score += 20
+        if (get(l,-1)==l.iloc[-5:].min()) and (get(lower_s,-1)>=2*get(body,-1)) and (get(upper_s,-1)<=0.1*get(body,-1)): buy_pats.append("锤子线"); score += 15
+        if (get(l,-1)==l.iloc[-5:].min()) and (get(upper_s,-1)>=2*get(body,-1)) and (get(lower_s,-1)<=0.1*get(body,-1)): buy_pats.append("倒锤头"); score += 10
+        if (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(o,-1)<get(c,-2)) and (get(c,-1)>get(o,-2)): buy_pats.append("阳包阴"); score += 20
+        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(o,-1)<get(l,-2)) and (get(c,-1)>(get(o,-2)+get(c,-2))/2): buy_pats.append("曙光初现"); score += 15
+        if abs(get(l,-1)-get(l,-2)) < (get(c,-1)*0.003) and (get(l,-1) <= l.iloc[-10:].min()): buy_pats.append("平底"); score += 15
+        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)>get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)): buy_pats.append("多头孕线"); score += 15
+        if (get(c,-2)<get(o,-2)) and (get(body,-2)>get(avg_body,-2)*1.2) and (get(o,-1)>get(c,-2)) and (get(c,-1)>get(o,-2)): buy_pats.append("旭日东升"); score += 25
+        if (get(h,-2) < get(l,-3)) and (get(l,-1) > get(h,-2)): buy_pats.append("岛形反转(底)"); score += 35
+        if (get(upper_s,-1) == 0) and (get(lower_s,-1) > 0) and (get(c,-1)>get(o,-1)) and (get(o,-1) > get(h,-2)): buy_pats.append("踢脚线"); score += 20
+        if (get(l,-1) <= get(ma20,-1)) and (min(get(o,-1), get(c,-1)) > get(ma20,-1)) and (get(c,-1)>get(o,-1)): buy_pats.append("蜻蜓点水"); score += 15
+        if (get(c,-3)>get(o,-3)) and (get(c,-2)>get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-2)>get(c,-3)): buy_pats.append("红三兵"); score += 15
+        if (get(c,-5)>get(o,-5)) and (get(body,-5)>get(avg_body,-5)) and (get(c,-4)<get(o,-4)) and (get(c,-3)<get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-5)): buy_pats.append("上升三法"); score += 25
+        if (get(c,-3)>get(o,-3)) and (get(c,-2)<get(o,-2)) and (get(c,-1)>get(o,-1)) and (get(c,-1)>get(c,-3)): buy_pats.append("多方炮"); score += 20
+        if get(l,-1)>get(h,-2): buy_pats.append("向上缺口"); score += 15
+        if (get(c,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))): buy_pats.append("一阳穿三线"); score += 25
+        if (get(v,-1)>get(v,-2)*1.9) and (get(c,-1)>=c.iloc[-20:].max()): buy_pats.append("倍量过左峰"); score += 20
         diff = max(get(ma5,-1),get(ma10,-1),get(ma20,-1)) - min(get(ma5,-1),get(ma10,-1),get(ma20,-1))
-        if (diff/get(c,-1)<0.015) and (get(c,-1)>get(ma5,-1)) and (get(c,-1)>get(o,-1)):
-            buy_pats.append("金蜘蛛"); score += 15
-        # 19. 仙人指路
-        if (get(upper_s,-2)>get(body,-2)) and (get(c,-1)>get(h,-2)) and (get(c,-1)>get(o,-1)):
-            buy_pats.append("仙人指路"); score += 15
+        if (diff/get(c,-1)<0.015) and (get(c,-1)>get(ma5,-1)) and (get(c,-1)>get(o,-1)): buy_pats.append("金蜘蛛"); score += 15
+        if (get(upper_s,-2)>get(body,-2)) and (get(c,-1)>get(h,-2)) and (get(c,-1)>get(o,-1)): buy_pats.append("仙人指路"); score += 15
 
-        # ==================== C. 风险形态 (卖出/否决) ====================
-        
-        # 20. 黄昏之星
-        if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2):
-            risk_pats.append("风险:黄昏之星"); score -= 30
-        # 21. 乌云盖顶
-        if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2):
-            risk_pats.append("风险:乌云盖顶"); score -= 25
-        # 22. 阴包阳
-        if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)):
-            risk_pats.append("风险:阴包阳"); score -= 25
-        # 23. 三只乌鸦
-        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)):
-            risk_pats.append("风险:三只乌鸦"); score -= 30
-        # 24. 射击之星
-        if (get(upper_s,-1)>2*get(body,-1)) and (get(lower_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15):
-            risk_pats.append("风险:射击之星"); score -= 20
-        # 25. 吊颈线
-        if (get(lower_s,-1)>2*get(body,-1)) and (get(upper_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15):
-            risk_pats.append("风险:吊颈线"); score -= 20
-        # 26. 断头铡刀
-        if (get(c,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))):
-            risk_pats.append("风险:断头铡刀"); score -= 40
-        # 27. 向下缺口
-        if get(h,-1)<get(l,-2):
-            risk_pats.append("风险:向下缺口"); score -= 20
-        # 28. 倾盆大雨
-        if (get(c,-2)>get(o,-2)) and (get(o,-1)<get(c,-2)) and (get(c,-1)<get(o,-2)) and (get(c,-1)<get(o,-1)):
-            risk_pats.append("风险:倾盆大雨"); score -= 25
-        # 29. 空头孕线
-        if (get(c,-2)>get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)<get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)) and (get(c,-1)>get(c,-20)*1.1):
-            risk_pats.append("风险:空头孕线"); score -= 20
-        # 30. 岛形反转(顶)
-        if (get(l,-2) > get(h,-3)) and (get(h,-1) < get(l,-2)):
-            risk_pats.append("风险:岛形反转(顶)"); score -= 50
-        # 31. 墓碑线
-        if (get(body,-1) < 0.005*get(c,-1)) and (get(upper_s,-1) > 3*get(body,-1)) and (get(lower_s,-1) < get(body,-1)) and (get(c,-1) > get(c,-20)*1.2):
-            risk_pats.append("风险:墓碑线"); score -= 30
-
+        # 卖出
+        if (get(c,-3)>get(o,-3)) and (get(l,-2)>get(h,-3)) and (get(c,-1)<get(o,-1)) and (get(c,-1)<(get(o,-3)+get(c,-3))/2): risk_pats.append("风险:黄昏之星"); score -= 30
+        if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(h,-2)) and (get(c,-1)<(get(o,-2)+get(c,-2))/2): risk_pats.append("风险:乌云盖顶"); score -= 25
+        if (get(c,-2)>get(o,-2)) and (get(c,-1)<get(o,-1)) and (get(o,-1)>get(c,-2)) and (get(c,-1)<get(o,-2)): risk_pats.append("风险:阴包阳"); score -= 25
+        if (get(c,-1)<get(o,-1)) and (get(c,-2)<get(o,-2)) and (get(c,-3)<get(o,-3)): risk_pats.append("风险:三只乌鸦"); score -= 30
+        if (get(upper_s,-1)>2*get(body,-1)) and (get(lower_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15): risk_pats.append("风险:射击之星"); score -= 20
+        if (get(lower_s,-1)>2*get(body,-1)) and (get(upper_s,-1)<0.1*get(body,-1)) and (get(c,-1)>get(c,-20)*1.15): risk_pats.append("风险:吊颈线"); score -= 20
+        if (get(c,-1)<min(get(ma5,-1),get(ma10,-1),get(ma20,-1))) and (get(o,-1)>max(get(ma5,-1),get(ma10,-1),get(ma20,-1))): risk_pats.append("风险:断头铡刀"); score -= 40
+        if get(h,-1)<get(l,-2): risk_pats.append("风险:向下缺口"); score -= 20
+        if (get(c,-2)>get(o,-2)) and (get(o,-1)<get(c,-2)) and (get(c,-1)<get(o,-2)) and (get(c,-1)<get(o,-1)): risk_pats.append("风险:倾盆大雨"); score -= 25
+        if (get(c,-2)>get(o,-2)) and (get(body,-2)>get(avg_body,-2)) and (get(c,-1)<get(o,-1)) and (get(h,-1)<get(h,-2)) and (get(l,-1)>get(l,-2)) and (get(c,-1)>get(c,-20)*1.1): risk_pats.append("风险:空头孕线"); score -= 20
+        if (get(l,-2) > get(h,-3)) and (get(h,-1) < get(l,-2)): risk_pats.append("风险:岛形反转(顶)"); score -= 50
+        if (get(body,-1) < 0.005*get(c,-1)) and (get(upper_s,-1) > 3*get(body,-1)) and (get(lower_s,-1) < get(body,-1)) and (get(c,-1) > get(c,-20)*1.2): risk_pats.append("风险:墓碑线"); score -= 30
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎 (完整版)
+# 3. 指标计算 (保持不变)
 # ==========================================
 class IndicatorEngine:
     @staticmethod
     def calculate(df):
         if len(df) < 60: return None
         c = df['close']; h = df['high']; l = df['low']; v = df['volume']
-        
-        # 均线
         ma5=c.rolling(5).mean(); ma10=c.rolling(10).mean(); ma20=c.rolling(20).mean(); ma60=c.rolling(60).mean()
         df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20
-        
-        # 量比计算
-        vol_ma5 = v.rolling(5).mean()
-        vol_ratio = v / vol_ma5.replace(0, 1)
-        
-        # CMF 资金流
+        vol_ma5 = v.rolling(5).mean(); vol_ratio = v / vol_ma5.replace(0, 1)
         mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
         cmf_series = (mf_mult * v).rolling(20).sum() / v.rolling(20).sum()
-        
-        # KDJ
         low_min = l.rolling(9).min(); high_max = h.rolling(9).max()
         rsv = (c - low_min) / (high_max - low_min) * 100
-        K = rsv.ewm(com=2, adjust=False).mean()
-        D = K.ewm(com=2, adjust=False).mean()
-        J = 3 * K - 2 * D
-        
-        # 布林带
-        std20 = c.rolling(20).std()
-        boll_up = ma20 + 2 * std20
-        boll_low = ma20 - 2 * std20
-        bb_width = (boll_up - boll_low) / ma20
-        bias = (c - ma20) / ma20 * 100
-        
-        # CCI
-        tp = (h + l + c) / 3
-        cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
-        
-        # ATR & RSI
+        K = rsv.ewm(com=2, adjust=False).mean(); D = K.ewm(com=2, adjust=False).mean(); J = 3 * K - 2 * D
+        std20 = c.rolling(20).std(); boll_up = ma20 + 2 * std20; boll_low = ma20 - 2 * std20
+        bb_width = (boll_up - boll_low) / ma20; bias = (c - ma20) / ma20 * 100
+        tp = (h + l + c) / 3; cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
         tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
         atr = tr.rolling(14).mean()
         delta = c.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + gain/loss))
-
-        # ADX
         up = h - h.shift(1); down = l.shift(1) - l
         plus_dm = np.where((up > down) & (up > 0), up, 0.0); minus_dm = np.where((down > up) & (down > 0), down, 0.0)
         tr_smooth = tr.rolling(14).sum()
         plus_di = 100 * (pd.Series(plus_dm).rolling(14).sum() / tr_smooth)
         minus_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / tr_smooth)
         dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di); adx = dx.rolling(14).mean()
-        
-        # MACD
         exp12 = c.ewm(span=12, adjust=False).mean(); exp26 = c.ewm(span=26, adjust=False).mean()
-        dif = exp12 - exp26; dea = dif.ewm(span=9, adjust=False).mean()
-        macd_bar = 2 * (dif - dea)
-
-        curr = df.iloc[-1]
-        pct_change = c.pct_change() * 100
-        
+        dif = exp12 - exp26; dea = dif.ewm(span=9, adjust=False).mean(); macd_bar = 2 * (dif - dea)
+        curr = df.iloc[-1]; pct_change = c.pct_change() * 100
         return {
             'close': curr['close'], 'ma20': ma20.iloc[-1], 'ma60': ma60.iloc[-1],
             'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 
             'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
-            
-            # 历史数据 (用于状态判定)
-            'dif_0': dif.iloc[-1], 'dif_1': dif.iloc[-2],
-            'dea_0': dea.iloc[-1], 'dea_1': dea.iloc[-2],
-            'macd_bar_0': macd_bar.iloc[-1], 'macd_bar_1': macd_bar.iloc[-2],
-            
+            'dif_0': dif.iloc[-1], 'dif_1': dif.iloc[-2], 'dea_0': dea.iloc[-1], 'dea_1': dea.iloc[-2], 'macd_bar_0': macd_bar.iloc[-1], 'macd_bar_1': macd_bar.iloc[-2],
             'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 
-            
-            # KDJ历史数据
-            'j_val': J.iloc[-1], 
-            'k_0': K.iloc[-1], 'k_1': K.iloc[-2],
-            'd_0': D.iloc[-1], 'd_1': D.iloc[-2],
-            
-            'bias': bias.iloc[-1], 
-            'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1],
+            'j_val': J.iloc[-1], 'k_0': K.iloc[-1], 'k_1': K.iloc[-2], 'd_0': D.iloc[-1], 'd_1': D.iloc[-2],
+            'bias': bias.iloc[-1], 'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1],
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
-            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3],
-            'vol_ratio': vol_ratio.iloc[-1] 
+            'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3], 'vol_ratio': vol_ratio.iloc[-1] 
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (完整补全字典)
+# 4. Excel 导出 (保持不变)
 # ==========================================
 class ExcelExporter:
     @staticmethod
     def save(df_data, filename):
         if df_data.empty: return
         print(f"正在生成 Excel 报表: {filename} ...")
-        
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-            cols = [
-                '代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
-                '买入形态', '风险形态', '舆情分析', '得分详情', 
-                'MACD状态', 'KDJ状态', 
-                '换手率%', '量比', '市盈率', '市净率', 
-                'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
-                'CMF(今)', 'CMF(昨)', 'CMF(前)', 
-                '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
-            ]
+            cols = ['代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
+                '买入形态', '风险形态', '舆情分析', '得分详情', 'MACD状态', 'KDJ状态', 
+                '换手率%', '量比', '市盈率', '市净率', 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
+                'CMF(今)', 'CMF(昨)', 'CMF(前)', '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)']
             df_export = df_data[[c for c in cols if c in df_data.columns]]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # [完整补全] 形态图解
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -350,7 +205,6 @@ class ExcelExporter:
             ]
             pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0]).to_excel(writer, sheet_name='形态图解', index=False)
             
-            # [完整补全] 指标说明
             indicators_desc = [
                 ['指标名称', '实战含义', '判断标准'],
                 ['量比', '量能变化', '>1.5为放量；0.5-1.0为缩量(锁筹)'],
@@ -368,17 +222,16 @@ class ExcelExporter:
                 ['KDJ状态', '短线买卖', '低位金叉为买点，高位死叉为卖点']
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
-            
         print(f"✅ Excel 文件已保存至: {filename}")
 
 # ==========================================
-# 5. 策略主控 (双源数据获取 + 策略逻辑)
+# 5. 策略主控 (重点修改：雪球自动翻页逻辑)
 # ==========================================
 class AlphaGalaxyOmni:
     def __init__(self):
         self.min_cap = 40 * 10000 * 10000 
 
-    # [Source 1] 东方财富获取逻辑 (Playwright + 轮询)
+    # [Source 1] 东方财富获取逻辑 (多节点轮询)
     def fetch_from_eastmoney(self, page):
         api_nodes = [
             "push2.eastmoney.com", "4.push2.eastmoney.com", "19.push2.eastmoney.com",
@@ -420,54 +273,71 @@ class AlphaGalaxyOmni:
                 time.sleep(1)
         return []
 
-    # [Source 2] 雪球获取逻辑 (Playwright + Cookie)
+    # [Source 2] 雪球获取逻辑 (修复：增加循环翻页)
     def fetch_from_xueqiu(self, page):
-        print("   ↳ [Xueqiu] 启动备份数据源...")
+        print("   ↳ [Xueqiu] 启动备份数据源 (自动翻页模式)...")
+        data_list = []
+        
         try:
             # 1. 访问主页获取 Cookie
             page.goto("https://xueqiu.com", timeout=20000, wait_until='domcontentloaded')
             time.sleep(2) 
             
-            # 2. 请求 API (size=5000 覆盖主要股票)
-            xq_url = "https://xueqiu.com/service/v5/stock/screener/quote/list?page=1&size=5000&order=desc&order_by=percent&exchange=CN&market=CN&type=sha,shb,sza,szb"
+            # 2. 循环翻页请求
+            current_page = 1
+            max_page = 100 # 防止死循环，一般50-60页就够了(每页100条的话)
+            page_size = 90 # 雪球单页限制较严，设为90比较稳妥
             
-            response = page.goto(xq_url, timeout=20000, wait_until='domcontentloaded')
-            if response.status != 200:
-                print(f"     ❌ Xueqiu API 状态码: {response.status}")
-                return []
+            while current_page <= max_page:
+                xq_url = f"https://xueqiu.com/service/v5/stock/screener/quote/list?page={current_page}&size={page_size}&order=desc&order_by=percent&exchange=CN&market=CN&type=sha,shb,sza,szb"
                 
-            json_data = response.json()
-            if 'data' not in json_data or 'list' not in json_data['data']:
-                print("     ❌ Xueqiu 返回数据格式异常")
-                return []
-                
-            raw_list = json_data['data']['list']
-            print(f"     ✅ 雪球数据获取成功: {len(raw_list)} 条")
-            
-            data_list = []
-            for item in raw_list:
                 try:
-                    # 雪球代码通常是 SH600xxx, 需要去除前缀
-                    raw_code = str(item.get('symbol', ''))
-                    code = re.sub(r'^[A-Za-z]+', '', raw_code) # 去除 SH/SZ
+                    response = page.goto(xq_url, timeout=10000, wait_until='domcontentloaded')
+                    if response.status != 200:
+                        print(f"     ⚠️ 第 {current_page} 页请求失败，状态码: {response.status}")
+                        break
+                        
+                    json_data = response.json()
+                    if 'data' not in json_data or 'list' not in json_data['data']:
+                        print("     ⚠️ 数据格式异常或已无更多数据")
+                        break
+                        
+                    raw_list = json_data['data']['list']
+                    if not raw_list:
+                        print("     ✅ 所有页面读取完毕")
+                        break
+                        
+                    print(f"     📄 读取第 {current_page} 页，获取 {len(raw_list)} 条...")
                     
-                    name = str(item.get('name', ''))
-                    price = float(item.get('current', 0))
-                    pe = float(item.get('pe_ttm', -1)) # 滚动市盈率
-                    pb = float(item.get('pb', -1))
-                    turnover = float(item.get('turnover_rate', 0))
-                    cap = float(item.get('market_capital', 0)) 
+                    for item in raw_list:
+                        try:
+                            # 清洗逻辑
+                            raw_code = str(item.get('symbol', ''))
+                            code = re.sub(r'^[A-Za-z]+', '', raw_code)
+                            name = str(item.get('name', ''))
+                            price = float(item.get('current', 0))
+                            pe = float(item.get('pe_ttm', -1))
+                            pb = float(item.get('pb', -1))
+                            turnover = float(item.get('turnover_rate', 0))
+                            cap = float(item.get('market_capital', 0))
+                            
+                            if pe is None: pe = -1
+                            if pb is None: pb = -1
+                            
+                            if (not code.startswith(('30', '688', '8', '4'))) and \
+                               ('ST' not in name) and ('退' not in name) and \
+                               (cap > self.min_cap) and (price > 3.0) and \
+                               (turnover > 1.0) and (turnover < 20):
+                                    data_list.append((code, name, pe, pb, turnover))
+                        except: continue
+                        
+                    current_page += 1
+                    time.sleep(0.5) # 稍微暂停，防封
                     
-                    if pe is None: pe = -1
-                    if pb is None: pb = -1
+                except Exception as e:
+                    print(f"     ❌ 翻页中断: {e}")
+                    break
                     
-                    if (not code.startswith(('30', '688', '8', '4'))) and \
-                       ('ST' not in name) and ('退' not in name) and \
-                       (cap > self.min_cap) and (price > 3.0) and \
-                       (turnover > 1.0) and (turnover < 20):
-                            data_list.append((code, name, pe, pb, turnover))
-                except: continue
-                
             return data_list
 
         except Exception as e:
@@ -505,14 +375,13 @@ class AlphaGalaxyOmni:
             print(f"❌ Playwright 致命错误: {e}")
             return []
             
-        print(f"   ✅ 清洗后剩余候选股: {len(data_list)} 只")
+        print(f"   ✅ 最终清洗后剩余候选股: {len(data_list)} 只")
         return data_list
 
     def scan_tech_fund(self, args):
         symbol, name, pe, pb, turnover = args
         try:
             if pe < 0: return None
-            
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
             # K线获取简单重试
