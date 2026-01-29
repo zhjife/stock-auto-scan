@@ -8,7 +8,8 @@ Features:
 4. 组合C: 真假突破 (布林带+资金流/黄金坑)
 5. NLP 舆情风控
 6. Excel 完整字典导出 (补全了历史CMF和涨幅数据及所有形态图解)
-7. [Fix] 修复快照数据获取逻辑，采用 Ultimate 版的防御性清洗机制
+7. 新增：MACD状态与KDJ状态详解 (金叉/死叉/红绿柱伸缩)
+8. [Fix] 深度优化的数据获取模块 (带重试机制)
 """
 
 import akshare as ak
@@ -20,6 +21,7 @@ import warnings
 from datetime import datetime, timedelta
 from snownlp import SnowNLP
 import time
+import random
 
 # 配置
 warnings.filterwarnings('ignore')
@@ -231,7 +233,7 @@ class KLineStrictLib:
         return score, buy_pats, risk_pats
 
 # ==========================================
-# 3. 高级指标计算引擎 (已补全：布林上下轨 + 历史涨幅/CMF)
+# 3. 高级指标计算引擎
 # ==========================================
 class IndicatorEngine:
     @staticmethod
@@ -239,24 +241,21 @@ class IndicatorEngine:
         if len(df) < 60: return None
         c = df['close']; h = df['high']; l = df['low']; v = df['volume']
         
-        # 均线
         ma5=c.rolling(5).mean(); ma10=c.rolling(10).mean(); ma20=c.rolling(20).mean(); ma60=c.rolling(60).mean()
         df['ma5'], df['ma10'], df['ma20'] = ma5, ma10, ma20
         
-        # 量比计算
         vol_ma5 = v.rolling(5).mean()
         vol_ratio = v / vol_ma5.replace(0, 1)
         
-        # CMF 资金流
         mf_mult = ((c - l) - (h - c)) / (h - l).replace(0, 0.01)
         cmf_series = (mf_mult * v).rolling(20).sum() / v.rolling(20).sum()
         
-        # KDJ
         low_min = l.rolling(9).min(); high_max = h.rolling(9).max()
         rsv = (c - low_min) / (high_max - low_min) * 100
-        K = rsv.ewm(com=2, adjust=False).mean(); D = K.ewm(com=2, adjust=False).mean(); J = 3 * K - 2 * D
+        K = rsv.ewm(com=2, adjust=False).mean()
+        D = K.ewm(com=2, adjust=False).mean()
+        J = 3 * K - 2 * D
         
-        # 布林带 [UPDATED for Combo C]
         std20 = c.rolling(20).std()
         boll_up = ma20 + 2 * std20
         boll_low = ma20 - 2 * std20
@@ -264,17 +263,14 @@ class IndicatorEngine:
         
         bias = (c - ma20) / ma20 * 100
         
-        # CCI
         tp = (h + l + c) / 3
         cci = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True))
         
-        # ATR & RSI
         tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
         atr = tr.rolling(14).mean()
         delta = c.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + gain/loss))
 
-        # ADX
         up = h - h.shift(1); down = l.shift(1) - l
         plus_dm = np.where((up > down) & (up > 0), up, 0.0); minus_dm = np.where((down > up) & (down > 0), down, 0.0)
         tr_smooth = tr.rolling(14).sum()
@@ -282,9 +278,9 @@ class IndicatorEngine:
         minus_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / tr_smooth)
         dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di); adx = dx.rolling(14).mean()
         
-        # MACD
         exp12 = c.ewm(span=12, adjust=False).mean(); exp26 = c.ewm(span=26, adjust=False).mean()
         dif = exp12 - exp26; dea = dif.ewm(span=9, adjust=False).mean()
+        macd_bar = 2 * (dif - dea)
 
         curr = df.iloc[-1]
         pct_change = c.pct_change() * 100
@@ -293,10 +289,20 @@ class IndicatorEngine:
             'close': curr['close'], 'ma20': ma20.iloc[-1], 'ma60': ma60.iloc[-1],
             'atr': atr.iloc[-1], 'adx': adx.iloc[-1], 
             'macd_dif': dif.iloc[-1], 'macd_dea': dea.iloc[-1],
-            'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 'j_val': J.iloc[-1], 'bias': bias.iloc[-1], 
+            
+            'dif_0': dif.iloc[-1], 'dif_1': dif.iloc[-2],
+            'dea_0': dea.iloc[-1], 'dea_1': dea.iloc[-2],
+            'macd_bar_0': macd_bar.iloc[-1], 'macd_bar_1': macd_bar.iloc[-2],
+            
+            'cci': cci.iloc[-1], 'rsi': rsi.iloc[-1], 
+            
+            'j_val': J.iloc[-1], 
+            'k_0': K.iloc[-1], 'k_1': K.iloc[-2],
+            'd_0': D.iloc[-1], 'd_1': D.iloc[-2],
+            
+            'bias': bias.iloc[-1], 
             'bb_width': bb_width.iloc[-1], 'bb_up': boll_up.iloc[-1], 'bb_low': boll_low.iloc[-1],
             
-            # [RESTORED] 补全历史数据返回
             'cmf_0': cmf_series.iloc[-1], 'cmf_1': cmf_series.iloc[-2], 'cmf_2': cmf_series.iloc[-3],
             'pct_0': pct_change.iloc[-1], 'pct_1': pct_change.iloc[-2], 'pct_2': pct_change.iloc[-3],
             
@@ -304,7 +310,7 @@ class IndicatorEngine:
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (更新：包含30+种形态说明)
+# 4. Excel 导出引擎
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -316,16 +322,15 @@ class ExcelExporter:
             cols = [
                 '代码', '名称', '总分', '现价', '建议买入区间', '止损价', '止盈价', 
                 '买入形态', '风险形态', '舆情分析', '得分详情', 
+                'MACD状态', 'KDJ状态', 
                 '换手率%', '量比', '市盈率', '市净率', 
                 'J值', 'RSI', 'BIAS(%)', '布林带宽', 'ADX', 'CCI', 
                 'CMF(今)', 'CMF(昨)', 'CMF(前)', 
                 '涨幅%(今)', '涨幅%(昨)', '涨幅%(前)'
             ]
-            # 确保列存在 (防呆)
             df_export = df_data[[c for c in cols if c in df_data.columns]]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # 形态图解 (完整 30+ 种)
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -363,7 +368,6 @@ class ExcelExporter:
             ]
             pd.DataFrame(patterns_desc[1:], columns=patterns_desc[0]).to_excel(writer, sheet_name='形态图解', index=False)
             
-            # 指标说明
             indicators_desc = [
                 ['指标名称', '实战含义', '判断标准'],
                 ['量比', '量能变化', '>1.5为放量；0.5-1.0为缩量(锁筹)'],
@@ -376,7 +380,9 @@ class ExcelExporter:
                 ['ADX', '趋势强度', '>25表示趋势强劲；<20表示震荡'],
                 ['RSI', '强弱指标', '50-80为强势区，>80过热'],
                 ['换手率', '活跃度', '3%-10%健康；>15%且滞涨则危险'],
-                ['CCI', '爆发力', '>100表示加速']
+                ['CCI', '爆发力', '>100表示加速'],
+                ['MACD状态', '趋势判断', '红柱伸长表加速上涨，绿柱缩短表止跌反弹'],
+                ['KDJ状态', '短线买卖', '低位金叉为买点，高位死叉为卖点']
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
@@ -390,27 +396,59 @@ class AlphaGalaxyOmni:
         self.min_cap = 40 * 10000 * 10000 
 
     def get_candidates(self):
+        """
+        优化后的数据获取模块：
+        1. 增加重试机制 (Max Retry = 3)
+        2. 增加随机延迟防封
+        3. 增加防御性列名检查与转换
+        """
         print("1. 获取全市场快照 & 初步清洗...")
+        
+        max_retries = 3
+        df = pd.DataFrame()
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"   ↳ 正在连接东方财富接口 (尝试 {attempt + 1}/{max_retries})...")
+                
+                # 获取数据
+                df = ak.stock_zh_a_spot_em()
+                
+                if df is not None and not df.empty:
+                    # 检查关键列是否存在，部分版本akshare返回列名可能不同
+                    # 这里做防御性列名映射检查，确保后续逻辑不报错
+                    required_cols = ['代码', '名称', '总市值', '最新价', '换手率', '市盈率-动态', '市净率']
+                    missing_cols = [c for c in required_cols if c not in df.columns]
+                    
+                    if missing_cols:
+                        print(f"   ⚠️ 数据缺失关键列: {missing_cols}，正在重试...")
+                        time.sleep(2)
+                        continue
+                    
+                    print("   ✅ 数据获取成功，开始清洗...")
+                    break # 成功则跳出循环
+                else:
+                    print("   ⚠️ 返回数据为空，正在重试...")
+            
+            except Exception as e:
+                print(f"   ❌ 连接异常: {e}")
+                
+            # 失败后随机等待 2-5 秒再重试
+            time.sleep(random.randint(2, 5))
+            
+        if df.empty:
+            print("❌ 多次尝试后无法获取数据，请检查网络或稍后重试。")
+            return []
+
+        # 防御性转换与清洗
         try:
-            # 采用 Ultimate (附件) 版的数据获取方式：
-            # ak.stock_zh_a_spot_em() 本身没有变化，但关键在于下方对列的处理方式
-            df = ak.stock_zh_a_spot_em()
-
-            if df is None or df.empty:
-                print("❌ 无法获取市场快照数据")
-                return []
-
-            # 【防御性清洗】
-            # 参考附件逻辑：检查列是否存在后再转换，防止因 AKShare 字段变更导致的 Crash
-            numeric_cols = ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']
+            numeric_cols = ['总市值', '最新价', '换手率', '市盈率-动态', '市净率']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                 else:
-                    # 如果缺少列，填充NaN以保证流程不中断
-                    df[col] = np.nan
+                    df[col] = 0 # 缺失列补0防报错
             
-            # 填充 NaN 以支持 boolean indexing
             df.fillna(0, inplace=True)
             
             mask = (
@@ -421,7 +459,6 @@ class AlphaGalaxyOmni:
                 (df['换手率'] > 1.0) & (df['换手率'] < 20)
             )
             
-            # 过滤并返回结果
             result_df = df[mask]
             return list(zip(
                 result_df['代码'], 
@@ -430,21 +467,28 @@ class AlphaGalaxyOmni:
                 result_df['市净率'], 
                 result_df['换手率']
             ))
+            
         except Exception as e:
-            print(f"❌ 快照数据获取异常: {e}")
+            print(f"❌ 数据清洗阶段发生严重错误: {e}")
             return []
 
     def scan_tech_fund(self, args):
         symbol, name, pe, pb, turnover = args
         try:
-            # 基础过滤：剔除亏损股 (可选)
             if pe < 0: return None
             
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
-            df = ak.stock_zh_a_hist(symbol=symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
+            # 个股K线获取增加一次简单的内部重试
+            df = None
+            for _ in range(2):
+                try:
+                    df = ak.stock_zh_a_hist(symbol=symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
+                    if df is not None and not df.empty: break
+                except: time.sleep(0.5)
             
-            if df is None: return None
+            if df is None or df.empty: return None
+
             df.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume'}, inplace=True)
             
             fac = IndicatorEngine.calculate(df)
@@ -454,77 +498,65 @@ class AlphaGalaxyOmni:
             score = 0
             logic = []
             
-            # --- 否决项 ---
             if risk_pats: score -= 30
             
             # =========================================================
-            # 策略组合 A：量比 + 换手率 + 位置 = 【主力意图】
+            # [MACD & KDJ 状态]
+            # =========================================================
+            dif0, dea0, dif1, dea1 = fac['dif_0'], fac['dea_0'], fac['dif_1'], fac['dea_1']
+            bar0, bar1 = fac['macd_bar_0'], fac['macd_bar_1']
+            
+            macd_cross_str = ""
+            if dif0 > dea0 and dif1 <= dea1: macd_cross_str = "金叉(新)"
+            elif dif0 < dea0 and dif1 >= dea1: macd_cross_str = "死叉(新)"
+            else: macd_cross_str = "金叉持仓" if dif0 > dea0 else "死叉持币"
+            
+            bar_status_str = ""
+            if bar0 > 0:
+                bar_status_str = "红柱伸长" if bar0 > bar1 else "红柱缩短"
+            else:
+                bar_status_str = "绿柱缩短" if bar0 > bar1 else "绿柱伸长"
+            
+            macd_full_status = f"{macd_cross_str} | {bar_status_str}"
+
+            k0, d0, k1, d1 = fac['k_0'], fac['d_0'], fac['k_1'], fac['d_1']
+            kdj_status_str = ""
+            if k0 > d0 and k1 <= d1: kdj_status_str = "金叉(新)"
+            elif k0 < d0 and k1 >= d1: kdj_status_str = "死叉(新)"
+            else: kdj_status_str = "多头排列" if k0 > d0 else "空头排列"
+
+            # =========================================================
+            # 策略组合
             # =========================================================
             is_trend_up = fac['close'] > fac['ma20']
             
-            # 1. 锁筹/躺赢 (拉升中 + 低换手 + 量比平稳)
             if is_trend_up and (1 < turnover < 5) and (0.5 < fac['vol_ratio'] < 1.2):
-                score += 20
-                logic.append("A:主力锁筹(最强)")
-            
-            # 2. 建仓/启动 (趋势向上 + 换手活跃 + 放量)
+                score += 20; logic.append("A:主力锁筹(最强)")
             elif is_trend_up and (fac['vol_ratio'] > 1.5) and (fac['pct_0'] > 0):
-                score += 15
-                logic.append("A:放量启动")
-            
-            # 3. 出货/滞涨 (高换手 + 滞涨) -> 扣分风险
+                score += 15; logic.append("A:放量启动")
             if (turnover > 15) and (-2 < fac['pct_0'] < 2):
-                score -= 30
-                logic.append("A:⚠️高换手滞涨")
+                score -= 30; logic.append("A:⚠️高换手滞涨")
 
-            # =========================================================
-            # 策略组合 B：MACD + RSI = 【买卖点校准】
-            # =========================================================
             macd_gold = (fac['macd_dif'] > fac['macd_dea']) and (fac['macd_dif'] > 0)
-            
             if macd_gold:
-                # 只有当情绪不过热时，MACD金叉才有效
-                if fac['rsi'] < 80:
-                    score += 10
-                    logic.append("B:趋势情绪共振")
-                else:
-                    # MACD金叉 但 RSI过热 = 假买点
-                    score -= 5
-                    logic.append("B:⚠️假买点(RSI过热)")
+                if fac['rsi'] < 80: score += 10; logic.append("B:趋势情绪共振")
+                else: score -= 5; logic.append("B:⚠️假买点(RSI过热)")
             
-            # =========================================================
-            # 策略组合 C：布林带 + 资金流 = 【真假突破】
-            # =========================================================
-            # 1. 黄金坑 (股价跌破下轨 + 资金流入)
             if (fac['close'] < fac['bb_low']) and (fac['cmf_0'] > 0.1):
-                score += 40  # 极高分，因为这是绝佳的反转点
-                logic.append("C:黄金坑(破位+资金进)")
-            
-            # 2. 顶背离/诱多 (股价突破上轨 + 资金流出)
+                score += 40; logic.append("C:黄金坑(破位+资金进)")
             if (fac['close'] > fac['bb_up']) and (fac['cmf_0'] < -0.05):
-                score -= 40
-                logic.append("C:⚠️顶背离(诱多)")
+                score -= 40; logic.append("C:⚠️顶背离(诱多)")
 
-            # =========================================================
-            # 其他辅助加分
-            # =========================================================
-            # 估值保护
             if 0 < pe <= 25: score += 10
             if pb > 10: score -= 5
-            
-            # 趋势强度 (ADX)
             if fac['adx'] > 25 and is_trend_up: score += 5
-            
-            # 形态得分
             if k_score > 0: score += k_score
 
-            # --- 输出 ---
             buy_l = fac['close'] * 0.99
             buy_h = fac['close'] * 1.01
             stop = fac['close'] - 2 * fac['atr']
             profit = fac['close'] + 3 * fac['atr']
             
-            # 门槛设定：保持65分
             if score >= 65:
                 return {
                     "代码": symbol, "名称": name, "总分": score, "现价": fac['close'],
@@ -535,11 +567,10 @@ class AlphaGalaxyOmni:
                     "买入形态": " | ".join(buy_pats) if buy_pats else "-",
                     "风险形态": " | ".join(risk_pats) if risk_pats else "-",
                     "得分详情": " ".join(logic),
+                    "MACD状态": macd_full_status, "KDJ状态": kdj_status_str,
                     "J值": round(fac['j_val'], 1), "布林带宽": round(fac['bb_width'], 3),
                     "RSI": round(fac['rsi'], 1), "BIAS(%)": round(fac['bias'], 2),
                     "ADX": int(fac['adx']), "CCI": int(fac['cci']),
-                    
-                    # [RESTORED] 补全历史数据字段
                     "CMF(今)": round(fac['cmf_0'], 3), "CMF(昨)": round(fac['cmf_1'], 3), "CMF(前)": round(fac['cmf_2'], 3),
                     "涨幅%(今)": round(fac['pct_0'], 2), "涨幅%(昨)": round(fac['pct_1'], 2), "涨幅%(前)": round(fac['pct_2'], 2)
                 }
@@ -588,12 +619,10 @@ class AlphaGalaxyOmni:
         df = pd.DataFrame(final_results)
         
         print("\n" + "="*120)
-        if not df.empty:
-            print(df[['代码', '名称', '总分', '现价', '得分详情']].head(10).to_string(index=False))
-            filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
-            ExcelExporter.save(df, filename)
-        else:
-            print("没有符合条件的股票生成报告。")
+        print(df[['代码', '名称', '总分', '现价', 'MACD状态', 'KDJ状态']].head(10).to_string(index=False))
+        
+        filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        ExcelExporter.save(df, filename)
 
 if __name__ == "__main__":
     AlphaGalaxyOmni().run()
