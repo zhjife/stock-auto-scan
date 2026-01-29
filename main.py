@@ -9,7 +9,7 @@ Features:
 5. NLP 舆情风控
 6. Excel 完整字典导出 (补全了历史CMF和涨幅数据及所有形态图解)
 7. 新增：MACD状态与KDJ状态详解 (金叉/死叉/红绿柱伸缩)
-8. [Fix] 核心修复：采用 Playwright 多节点轮询获取快照数据 (抗反爬)
+8. [Fix] 核心修复：采用 Playwright 多节点轮询获取快照数据 (抗反爬增强版)
 """
 
 import akshare as ak
@@ -24,7 +24,7 @@ import time
 import json
 import random
 
-# === 引入 Playwright (新增) ===
+# === 引入 Playwright (核心依赖) ===
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
@@ -330,7 +330,7 @@ class IndicatorEngine:
         }
 
 # ==========================================
-# 4. Excel 导出引擎 (更新：包含30+种形态说明 & 新增MACD/KDJ状态列)
+# 4. Excel 导出引擎
 # ==========================================
 class ExcelExporter:
     @staticmethod
@@ -352,7 +352,7 @@ class ExcelExporter:
             df_export = df_data[[c for c in cols if c in df_data.columns]]
             df_export.to_excel(writer, sheet_name='选股结果', index=False)
             
-            # 形态图解 (完整 30+ 种)
+            # 形态图解
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入-反转', '底部三日组合：阴线+星线+阳线，强力见底'],
