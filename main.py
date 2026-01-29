@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终修复版 - 雪球自动翻页)
+Alpha Galaxy Omni Pro Max - 机构全维量化系统 (最终修复版 - 东方财富翻页优化)
 Features: 
-1. [Fix] 修复雪球接口只返回30条的问题 -> 增加 while 循环自动翻页获取全市场
-2. [Dual Source] 东方财富(首选) + 雪球(备用)
+1. [Core Fix 1] 东方财富：增加 while 循环自动翻页 (解决只返回100条的问题)
+2. [Core Fix 2] 雪球备用：优化字段解析与容错 (解决获取后被全部过滤的问题)
 3. 完整保留所有策略与导出功能
 """
 
@@ -225,55 +225,85 @@ class ExcelExporter:
         print(f"✅ Excel 文件已保存至: {filename}")
 
 # ==========================================
-# 5. 策略主控 (重点修改：雪球自动翻页逻辑)
+# 5. 策略主控 (重点修改：自动翻页与容错)
 # ==========================================
 class AlphaGalaxyOmni:
     def __init__(self):
         self.min_cap = 40 * 10000 * 10000 
 
-    # [Source 1] 东方财富获取逻辑 (多节点轮询)
+    # [Source 1] 东方财富获取逻辑 (修复：必须使用循环翻页，因为服务器限制单页返回数量)
     def fetch_from_eastmoney(self, page):
         api_nodes = [
             "push2.eastmoney.com", "4.push2.eastmoney.com", "19.push2.eastmoney.com",
             "26.push2.eastmoney.com", "6.push2.eastmoney.com", "82.push2.eastmoney.com"
         ]
-        base_url = "https://{DOMAIN}/api/qt/clist/get?pn=1&pz=50000&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f8,f9,f20,f23"
+        # 使用 pz=100 (每页100条) 更安全，防止大包被拒
+        base_url = "https://{DOMAIN}/api/qt/clist/get?pn={PAGE}&pz=100&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f8,f9,f20,f23"
         
         data_list = []
+        # 尝试不同节点
         for node in api_nodes:
-            target_url = base_url.format(DOMAIN=node)
             print(f"   ↳ [EastMoney] 尝试连接节点: {node} ...")
-            try:
-                response = page.goto(target_url, timeout=15000, wait_until='domcontentloaded')
-                if response.status == 200:
-                    json_text = response.text()
-                    if not json_text: continue
-                    data_json = json.loads(json_text)
-                    if 'data' in data_json and 'diff' in data_json['data']:
-                        raw_data = data_json['data']['diff']
-                        print(f"     ✅ 成功! 获取到 {len(raw_data)} 条数据")
-                        for item in raw_data:
-                            try:
-                                code = str(item.get('f12', ''))
-                                name = str(item.get('f14', ''))
-                                price = float(item.get('f2', 0))
-                                pe = float(item.get('f9', -1))
-                                pb = float(item.get('f23', -1))
-                                turnover = float(item.get('f8', 0))
-                                cap = float(item.get('f20', 0))
-                                if (not code.startswith(('30', '688', '8', '4'))) and \
-                                   ('ST' not in name) and ('退' not in name) and \
-                                   (cap > self.min_cap) and (price > 3.0) and \
-                                   (turnover > 1.0) and (turnover < 20):
-                                        data_list.append((code, name, pe, pb, turnover))
-                            except: continue
-                        return data_list
-            except Exception as e:
-                print(f"     ❌ 连接超时或被拒: {str(e)[:30]}...")
-                time.sleep(1)
+            current_node_data = []
+            page_num = 1
+            node_failed = False
+            
+            # 开始翻页循环
+            while True:
+                target_url = base_url.format(DOMAIN=node, PAGE=page_num)
+                try:
+                    response = page.goto(target_url, timeout=8000, wait_until='domcontentloaded')
+                    if response.status == 200:
+                        json_text = response.text()
+                        if not json_text: 
+                            node_failed = True; break
+                        
+                        data_json = json.loads(json_text)
+                        if 'data' in data_json and 'diff' in data_json['data']:
+                            raw_data = data_json['data']['diff']
+                            if not raw_data: # 没有更多数据了，正常结束
+                                break 
+                            
+                            # 数据清洗
+                            for item in raw_data:
+                                try:
+                                    code = str(item.get('f12', ''))
+                                    name = str(item.get('f14', ''))
+                                    price = float(item.get('f2', 0))
+                                    pe = float(item.get('f9', -1))
+                                    pb = float(item.get('f23', -1))
+                                    turnover = float(item.get('f8', 0))
+                                    cap = float(item.get('f20', 0))
+                                    if (not code.startswith(('30', '688', '8', '4'))) and \
+                                       ('ST' not in name) and ('退' not in name) and \
+                                       (cap > self.min_cap) and (price > 3.0) and \
+                                       (turnover > 1.0) and (turnover < 20):
+                                            current_node_data.append((code, name, pe, pb, turnover))
+                                except: continue
+                            
+                            # 翻页
+                            page_num += 1
+                            if page_num % 10 == 0: print(f"     ...已读取 {page_num} 页 (当前累计 {len(current_node_data)} 只)...")
+                        else:
+                            node_failed = True; break # 数据格式不对
+                    else:
+                        node_failed = True; break # HTTP 错误
+                except Exception as e:
+                    print(f"     ❌ 连接中断: {str(e)[:30]}")
+                    node_failed = True; break
+            
+            # 如果该节点成功获取了数据（比如超过1000条），就直接返回，不再试其他节点
+            if not node_failed and len(current_node_data) > 100:
+                print(f"     ✅ 东方财富获取成功: 共 {len(current_node_data)} 条有效数据")
+                return current_node_data
+            elif len(current_node_data) > 100:
+                # 即使报错中断，如果已经拿到够多数据，也算成功
+                print(f"     ⚠️ 节点中断但已获取 {len(current_node_data)} 条，保留使用")
+                return current_node_data
+                
         return []
 
-    # [Source 2] 雪球获取逻辑 (修复：增加循环翻页)
+    # [Source 2] 雪球获取逻辑 (修复：增强容错，防止过滤掉所有数据)
     def fetch_from_xueqiu(self, page):
         print("   ↳ [Xueqiu] 启动备份数据源 (自动翻页模式)...")
         data_list = []
@@ -285,30 +315,26 @@ class AlphaGalaxyOmni:
             
             # 2. 循环翻页请求
             current_page = 1
-            max_page = 100 # 防止死循环，一般50-60页就够了(每页100条的话)
-            page_size = 90 # 雪球单页限制较严，设为90比较稳妥
+            max_page = 60 # 60页 * 90条 = 5400条，覆盖全市场
+            page_size = 90 
             
             while current_page <= max_page:
                 xq_url = f"https://xueqiu.com/service/v5/stock/screener/quote/list?page={current_page}&size={page_size}&order=desc&order_by=percent&exchange=CN&market=CN&type=sha,shb,sza,szb"
                 
                 try:
                     response = page.goto(xq_url, timeout=10000, wait_until='domcontentloaded')
-                    if response.status != 200:
-                        print(f"     ⚠️ 第 {current_page} 页请求失败，状态码: {response.status}")
-                        break
-                        
+                    if response.status != 200: break
+                    
                     json_data = response.json()
-                    if 'data' not in json_data or 'list' not in json_data['data']:
-                        print("     ⚠️ 数据格式异常或已无更多数据")
-                        break
+                    if 'data' not in json_data or 'list' not in json_data['data']: break
                         
                     raw_list = json_data['data']['list']
-                    if not raw_list:
-                        print("     ✅ 所有页面读取完毕")
-                        break
-                        
-                    print(f"     📄 读取第 {current_page} 页，获取 {len(raw_list)} 条...")
+                    if not raw_list: break
                     
+                    # 打印第一条数据样本，用于调试单位
+                    if current_page == 1:
+                        print(f"     🔍 雪球数据样本: {raw_list[0]}")
+                        
                     for item in raw_list:
                         try:
                             # 清洗逻辑
@@ -316,28 +342,37 @@ class AlphaGalaxyOmni:
                             code = re.sub(r'^[A-Za-z]+', '', raw_code)
                             name = str(item.get('name', ''))
                             price = float(item.get('current', 0))
-                            pe = float(item.get('pe_ttm', -1))
-                            pb = float(item.get('pb', -1))
-                            turnover = float(item.get('turnover_rate', 0))
-                            cap = float(item.get('market_capital', 0))
                             
-                            if pe is None: pe = -1
-                            if pb is None: pb = -1
+                            # 雪球有些字段可能是 null，使用 or 0 处理
+                            pe = float(item.get('pe_ttm') or -1)
+                            pb = float(item.get('pb') or -1)
+                            turnover = float(item.get('turnover_rate') or 0) # 如果是 None 则为 0
+                            cap = float(item.get('market_capital') or 0)
                             
-                            if (not code.startswith(('30', '688', '8', '4'))) and \
-                               ('ST' not in name) and ('退' not in name) and \
-                               (cap > self.min_cap) and (price > 3.0) and \
-                               (turnover > 1.0) and (turnover < 20):
-                                    data_list.append((code, name, pe, pb, turnover))
+                            # 过滤逻辑 (放宽条件，防止误杀)
+                            # 雪球的 cap 单位通常是元，turnover 是百分比 (如 2.5)
+                            is_valid = True
+                            if code.startswith(('30', '688', '8', '4')): is_valid = False
+                            if 'ST' in name or '退' in name: is_valid = False
+                            if cap < self.min_cap: is_valid = False
+                            if price < 3.0: is_valid = False
+                            
+                            # 对于备用源，换手率条件放宽，如果为0(停牌或数据缺失)也暂时通过，交给后续akshare清洗
+                            if turnover > 20: is_valid = False 
+                            
+                            if is_valid:
+                                data_list.append((code, name, pe, pb, turnover))
                         except: continue
                         
                     current_page += 1
-                    time.sleep(0.5) # 稍微暂停，防封
+                    if current_page % 10 == 0: print(f"     ...雪球翻页中: 第 {current_page} 页...")
+                    time.sleep(0.5) 
                     
                 except Exception as e:
                     print(f"     ❌ 翻页中断: {e}")
                     break
                     
+            print(f"     ✅ 雪球数据获取结束: 共 {len(data_list)} 条")
             return data_list
 
         except Exception as e:
