@@ -8,6 +8,7 @@ Features:
 4. 组合C: 真假突破 (布林带+资金流/黄金坑)
 5. NLP 舆情风控
 6. Excel 完整字典导出 (补全了历史CMF和涨幅数据及所有形态图解)
+7. [Fix] 修复快照数据获取逻辑，采用 Ultimate 版的防御性清洗机制
 """
 
 import akshare as ak
@@ -391,9 +392,26 @@ class AlphaGalaxyOmni:
     def get_candidates(self):
         print("1. 获取全市场快照 & 初步清洗...")
         try:
+            # 采用 Ultimate (附件) 版的数据获取方式：
+            # ak.stock_zh_a_spot_em() 本身没有变化，但关键在于下方对列的处理方式
             df = ak.stock_zh_a_spot_em()
-            for col in ['总市值', '最新价', '换手率', '市盈率-动态', '市净率']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            if df is None or df.empty:
+                print("❌ 无法获取市场快照数据")
+                return []
+
+            # 【防御性清洗】
+            # 参考附件逻辑：检查列是否存在后再转换，防止因 AKShare 字段变更导致的 Crash
+            numeric_cols = ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                else:
+                    # 如果缺少列，填充NaN以保证流程不中断
+                    df[col] = np.nan
+            
+            # 填充 NaN 以支持 boolean indexing
+            df.fillna(0, inplace=True)
             
             mask = (
                 (~df['代码'].str.startswith(('30', '688', '8', '4'))) & 
@@ -402,8 +420,18 @@ class AlphaGalaxyOmni:
                 (df['最新价'] > 3.0) &
                 (df['换手率'] > 1.0) & (df['换手率'] < 20)
             )
-            return list(zip(df[mask]['代码'], df[mask]['名称'], df[mask]['市盈率-动态'], df[mask]['市净率'], df[mask]['换手率']))
-        except:
+            
+            # 过滤并返回结果
+            result_df = df[mask]
+            return list(zip(
+                result_df['代码'], 
+                result_df['名称'], 
+                result_df['市盈率-动态'], 
+                result_df['市净率'], 
+                result_df['换手率']
+            ))
+        except Exception as e:
+            print(f"❌ 快照数据获取异常: {e}")
             return []
 
     def scan_tech_fund(self, args):
@@ -560,10 +588,12 @@ class AlphaGalaxyOmni:
         df = pd.DataFrame(final_results)
         
         print("\n" + "="*120)
-        print(df[['代码', '名称', '总分', '现价', '得分详情']].head(10).to_string(index=False))
-        
-        filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        ExcelExporter.save(df, filename)
+        if not df.empty:
+            print(df[['代码', '名称', '总分', '现价', '得分详情']].head(10).to_string(index=False))
+            filename = f"Alpha_Galaxy_ProMax_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            ExcelExporter.save(df, filename)
+        else:
+            print("没有符合条件的股票生成报告。")
 
 if __name__ == "__main__":
     AlphaGalaxyOmni().run()
