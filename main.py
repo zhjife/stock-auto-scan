@@ -301,18 +301,29 @@ class AlphaGalaxyOmni:
             page.goto("https://xueqiu.com", timeout=20000, wait_until='domcontentloaded')
             time.sleep(2) 
             current_page = 1
-            max_page = 60
+            max_page = 70
             page_size = 90 
             
             while current_page <= max_page:
                 xq_url = f"https://xueqiu.com/service/v5/stock/screener/quote/list?page={current_page}&size={page_size}&order=desc&order_by=percent&exchange=CN&market=CN&type=sha,shb,sza,szb"
                 try:
                     response = page.goto(xq_url, timeout=10000, wait_until='domcontentloaded')
-                    if response.status != 200: break
+                    
+                    if response.status != 200:
+                        print(f"     ⚠️ 第 {current_page} 页请求失败，状态码: {response.status}")
+                        break
+                        
                     json_data = response.json()
-                    if 'data' not in json_data or 'list' not in json_data['data']: break
+                    if 'data' not in json_data or 'list' not in json_data['data']:
+                        print("     ⚠️ 数据格式异常或已无更多数据")
+                        break
                     raw_list = json_data['data']['list']
-                    if not raw_list: break
+                    if not raw_list:
+                        print("     ✅ 所有页面读取完毕")
+                        break
+                        
+                    print(f"     📄 读取第 {current_page} 页，获取 {len(raw_list)} 条...")    
+                    
                     
                     for item in raw_list:
                         try:
@@ -359,12 +370,12 @@ class AlphaGalaxyOmni:
                 page = context.new_page()
 
                 # 1. 尝试东方财富
-                data_list = self.fetch_from_eastmoney(page)
+                data_list = self.fetch_from_xueqiu(page)
                 
                 # 2. 如果失败，尝试雪球
                 if not data_list:
                     print("⚠️ 东方财富节点全灭，切换至雪球接口...")
-                    data_list = self.fetch_from_xueqiu(page)
+                    data_list = self.fetch_from_eastmoney(page)
 
                 browser.close()
         except Exception as e:
