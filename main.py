@@ -452,7 +452,7 @@ class AlphaGalaxyOmni:
             stop = fac['close'] - 2 * fac['atr']
             profit = fac['close'] + 3 * fac['atr']
             
-            if score >= 65:
+            if score >= 50:
                 return {
                     "代码": symbol, "名称": name, "总分": score, "现价": fac['close'],
                     "市盈率": round(pe, 2), "市净率": round(pb, 2), "换手率%": round(turnover, 2),
